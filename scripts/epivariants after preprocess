@@ -1,0 +1,465 @@
+#! epivariants after preprocessing_V5 _without functions 
+#====================================
+#EPIVARIANTS ALL STEPS 
+#====================================
+
+# This script performs the following steps:
+# 1. Load libraries and data
+# 2. Filter epivariants based on method agreement, sample consistency, and directionality
+# 3. Create a unified table of all epivariants with detailed annotations before filtering 
+# 4. Annotate epivariants with genomic features (genes, CpG islands, etc.)
+# 5. Describe the beta value context of epivariants (mean delta beta, etc.)
+# 6. Describe beta context by region 
+# 7. Identify and annotate epivariant hotspots (clusters of nearby epivariants)
+
+
+
+
+
+#! 1. Load libraries and data
+  #!LOAD THEM
+  library(readr)
+  library(data.table)
+  library(dplyr)
+
+  # ! load data
+  # Specify the folder containing your TSV files
+  folder_path <- "/Users/rachele/Downloads/results_epivariants"
+  # List all the TSV files in the folder
+  tsv_files <- list.files(path = folder_path, pattern = "\\.tsv$", full.names = TRUE)
+  # Loop through each file and assign it to an object
+  for (file in tsv_files) {
+  file_name <- tools::file_path_sans_ext(basename(file))
+  assign(file_name, read_tsv(file))
+  }
+  # Get the names of all dataframes in the environment
+  dataframes <- ls(pattern = ".*")
+  #!NOT SURE IF I SHOULD ANNOTATE OR NOT BEFORE WILL DECIDE AFTER WARDS
+  # remove the once with 0 0 0
+  dataframe_names <- ls()[sapply(ls(), function(x) is.data.frame(get(x)))]
+  dataframe_names <- dataframe_names[dataframe_names != "tsv_files"]
+  dataframe_names <- dataframe_names[startsWith(dataframe_names, "epimutations")]
+  for (df_name in dataframe_names) {
+  df <- get(df_name)
+  df <- df[
+  !is.na(df$chromosome) & !is.na(df$start) & !is.na(df$end) &
+  df$chromosome != 0 & df$start != 0 & df$end != 0,
+  ]
+  assign(df_name, df, envir = .GlobalEnv)
+  }
+
+
+
+#! 2. filter epivariants 
+  # ============================================================
+  # EPIVARIANT FILTERING PIPELINE
+  # Logic:
+  #   Step 1 - Clean R_vs_NR epivariants independently
+  #   Step 2 - Clean MR_vs_NR epivariants independently
+  #   Step 3 - Find shared regions AFTER both are cleaned
+  #
+  # Filters applied (separately to R and MR):
+  #   (a) Detected by >= 3 methods
+  #   (b) The SAME samples flagged across all detecting methods
+  #   (c) All detecting methods agree on direction (hyper OR hypo, not both)
+  # ============================================================
+
+  library(tidyverse)
+
+  # ============================================================
+  # PREREQUISITE: rebuild per-method, per-sample raw data
+  # (one row per region x method x sample)
+  # ============================================================
+
+  r_dataframes <- c(
+    "epimutations_R_vs_NR_beta_allSamples",
+    "epimutations_R_vs_NR_iForest_allSamples", 
+    "epimutations_R_vs_NR_manova_allSamples",
+    "epimutations_R_vs_NR_mlm_allSamples",
+    "epimutations_R_vs_NR_quantile_allSamples"
+  )
+  mr_dataframes <- c(
+    "epimutations_MR_vs_NR_beta_allSamples",
+    "epimutations_MR_vs_NR_iForest_allSamples", 
+    "epimutations_MR_vs_NR_manova_allSamples",
+    "epimutations_MR_vs_NR_mlm_allSamples",
+    "epimutations_MR_vs_NR_quantile_allSamples"
+  )
+
+
+  raw_R  <- build_raw_table(r_dataframes,  "R_vs_NR")
+  raw_MR <- build_raw_table(mr_dataframes, "MR_vs_NR")
+
+  cat("Raw R_vs_NR rows:",  nrow(raw_R),  "| unique regions:", n_distinct(raw_R$region_id), "\n")
+  cat("Raw MR_vs_NR rows:", nrow(raw_MR), "| unique regions:", n_distinct(raw_MR$region_id), "\n")
+
+
+  # ============================================================
+  # STEP 1: CLEAN R_vs_NR
+  # ============================================================
+
+  clean_R <- filter_epivariants(raw_R, "R_vs_NR", min_methods = 3)
+
+  write.table(clean_R,
+              "CLEAN_epivariants_R_vs_NR.tsv",
+              sep = "\t", row.names = FALSE, quote = FALSE)
+
+  cat("\nSaved: CLEAN_epivariants_R_vs_NR.tsv\n")
+
+
+  # ============================================================
+  # STEP 2: CLEAN MR_vs_NR
+  # ============================================================
+
+  clean_MR <- filter_epivariants(raw_MR, "MR_vs_NR", min_methods = 3)
+
+  write.table(clean_MR,
+              "CLEAN_epivariants_MR_vs_NR.tsv",
+              sep = "\t", row.names = FALSE, quote = FALSE)
+
+  cat("\nSaved: CLEAN_epivariants_MR_vs_NR.tsv\n")
+
+
+  # ============================================================
+  # STEP 3: FIND SHARED REGIONS (after independent cleaning)
+  # ============================================================
+
+  cat("\n", paste(rep("=", 60), collapse = ""), "\n")
+  cat("STEP 3: Finding shared regions\n")
+  cat(paste(rep("=", 60), collapse = ""), "\n")
+
+  # Regions present in both clean sets
+  shared_region_ids <- intersect(clean_R$region_id, clean_MR$region_id)
+
+  cat("Regions in clean R only:   ", nrow(clean_R)  - length(shared_region_ids), "\n")
+  cat("Regions in clean MR only:  ", nrow(clean_MR) - length(shared_region_ids), "\n")
+  cat("Regions shared (R AND MR): ", length(shared_region_ids), "\n")
+
+  # Build the shared table by joining both clean sets
+  shared_epivariants <- clean_R %>%
+    filter(region_id %in% shared_region_ids) %>%
+    dplyr::select(
+      region_id, chromosome, start, end,
+      tier_R          = tier,
+      n_methods_R     = n_methods,
+      methods_R       = methods_final,
+      n_samples_R     = n_samples_final,
+      samples_R       = samples_final,
+      direction_R     = consensus_direction,
+      n_cpgs, cpg_ids_all
+    ) %>%
+    left_join(
+      clean_MR %>%
+        filter(region_id %in% shared_region_ids) %>%
+        dplyr::select(
+          region_id,
+          tier_MR         = tier,
+          n_methods_MR    = n_methods,
+          methods_MR      = methods_final,
+          n_samples_MR    = n_samples_final,
+          samples_MR      = samples_final,
+          direction_MR    = consensus_direction
+        ),
+      by = "region_id"
+    ) %>%
+    mutate(
+      # Do R and MR agree on direction?
+      direction_agreement = case_when(
+        direction_R == direction_MR ~ "SAME direction",
+        TRUE ~ "OPPOSITE direction"
+      ),
+      
+      # Do R and MR share any samples? (unlikely but worth checking)
+      samples_R_list  = str_split(samples_R,  ","),
+      samples_MR_list = str_split(samples_MR, ","),
+      n_samples_overlap = map2_int(samples_R_list, samples_MR_list,
+                                  ~ length(intersect(.x, .y))),
+      samples_overlap   = map2_chr(samples_R_list, samples_MR_list,
+                                  ~ paste(intersect(.x, .y), collapse = ",")),
+      samples_overlap   = ifelse(samples_overlap == "", NA, samples_overlap)
+    ) %>%
+    dplyr::select(-samples_R_list, -samples_MR_list) %>%
+    arrange(desc(n_methods_R + n_methods_MR), chromosome, start)
+
+  cat("\n--- SHARED EPIVARIANT SUMMARY ---\n")
+  cat("Total shared regions:", nrow(shared_epivariants), "\n")
+  if (nrow(shared_epivariants) > 0) {
+    cat("Direction agreement:\n"); print(table(shared_epivariants$direction_agreement))
+    cat("Sample overlap between R and MR samples:\n")
+    cat("  Regions with at least 1 overlapping sample:",
+        sum(shared_epivariants$n_samples_overlap > 0), "\n")
+  }
+
+  write.table(shared_epivariants,
+              "SHARED_epivariants_R_and_MR.tsv",
+              sep = "\t", row.names = FALSE, quote = FALSE)
+
+  cat("Saved: SHARED_epivariants_R_and_MR.tsv\n")
+
+
+  # ============================================================
+  # FINAL COMBINED TABLE (all 3 groups: R-only, MR-only, Shared)
+  # ============================================================
+
+  unique_R_only <- clean_R %>%
+    filter(!region_id %in% shared_region_ids) %>%
+    mutate(epivariant_class = "R_only")
+
+  unique_MR_only <- clean_MR %>%
+    filter(!region_id %in% shared_region_ids) %>%
+    mutate(epivariant_class = "MR_only")
+
+  # For the shared ones, keep one row per region with both R and MR info merged
+  shared_for_combined <- shared_epivariants %>%
+    mutate(
+      epivariant_class  = "Shared_R_and_MR",
+      # Use the stricter tier (fewer methods = lower confidence)
+      tier              = ifelse(n_methods_R <= n_methods_MR, tier_R, tier_MR),
+      n_methods         = paste0("R:", n_methods_R, " MR:", n_methods_MR),
+      methods_final     = paste0("R[", methods_R, "] MR[", methods_MR, "]"),
+      n_samples_final   = paste0("R:", n_samples_R, " MR:", n_samples_MR),
+      samples_final     = paste0("R[", samples_R, "] MR[", samples_MR, "]"),
+      consensus_direction = paste0("R:", direction_R, " | MR:", direction_MR),
+      comparison        = "Shared"
+    ) %>%
+    dplyr::select(region_id, chromosome, start, end,
+          comparison, epivariant_class, tier,
+          n_methods, methods_final,
+          n_samples_final, samples_final,
+          n_cpgs, cpg_ids_all,
+          consensus_direction)
+
+
+  unique_MR_only$n_methods <- as.character(unique_MR_only$n_methods)
+  unique_R_only$n_methods <- as.character(unique_R_only$n_methods)
+  unique_MR_only$n_samples_final <- as.character(unique_MR_only$n_samples_final)
+  unique_R_only$n_samples_final <- as.character(unique_R_only$n_samples_final)
+
+  # Combine all three classes into one master table
+  master_clean <- bind_rows(
+    unique_R_only  %>% mutate(comparison = "R_vs_NR") %>%
+      dplyr::select(region_id, chromosome, start, end, comparison, epivariant_class,
+            tier, n_methods, methods_final, n_samples_final, samples_final,
+            n_cpgs, cpg_ids_all, consensus_direction),
+    unique_MR_only %>% mutate(comparison = "MR_vs_NR") %>%
+      dplyr::select(region_id, chromosome, start, end, comparison, epivariant_class,
+            tier, n_methods, methods_final, n_samples_final, samples_final,
+            n_cpgs, cpg_ids_all, consensus_direction),
+    shared_for_combined
+  ) %>%
+    arrange(epivariant_class, chromosome, start)
+
+  cat("\n=== MASTER CLEAN TABLE SUMMARY ===\n")
+  print(table(master_clean$epivariant_class))
+  print(table(master_clean$epivariant_class, master_clean$tier))
+
+  write.table(master_clean,
+              "MASTER_CLEAN_epivariants.tsv",
+              sep = "\t", row.names = FALSE, quote = FALSE)
+
+  cat("\nSaved: MASTER_CLEAN_epivariants.tsv\n")
+
+#! 3. UNITED EPIVARIANT WITH PASSED AND NOT
+  library(dplyr)
+
+  r_dataframes <- c(
+    "epimutations_R_vs_NR_beta_allSamples",
+    "epimutations_R_vs_NR_iForest_allSamples", 
+    "epimutations_R_vs_NR_manova_allSamples",
+    "epimutations_R_vs_NR_mlm_allSamples",
+    "epimutations_R_vs_NR_quantile_allSamples"
+  )
+  mr_dataframes <- c(
+    "epimutations_MR_vs_NR_beta_allSamples",
+    "epimutations_MR_vs_NR_iForest_allSamples", 
+    "epimutations_MR_vs_NR_manova_allSamples",
+    "epimutations_MR_vs_NR_mlm_allSamples",
+    "epimutations_MR_vs_NR_quantile_allSamples"
+  )
+
+  # Run unified analysis
+  unified_summary <- unified_epivariant_analysis(r_dataframes, mr_dataframes)
+
+#! 4. ANNOTATE EPIVARIANTS WITH GENOMIC FEATURES
+
+  library(tidyverse)
+  library(SummarizedExperiment)
+  library(GenomicRanges)
+  library(ggplot2)
+  library(patchwork)
+  library(ggVennDiagram)
+  library(viridis)
+
+
+  # ============================================================
+  # SECTION 1: GENE & GENOMIC ANNOTATION
+  # ============================================================
+  # Three layers:
+  #   1A. Genomic feature + nearest gene   (ChIPseeker)
+  #   1B. CpG island context               (annotatr)
+  #   1C. ENCODE cCRE overlap              (your existing cre_screen)
+
+  #REMBER TO DO THIS BEFORE 
+
+  #downloaded the cis-Regulatory Elements file from https://screen.encodeproject.org/
+  GRCh38.cCREs <- read.delim2("~/Downloads/GRCh38-cCREs.bed", header=FALSE)
+ 
+ 
+
+  colnames(GRCh38.cCREs)[1:3] <- c("chr", "start", "end")
+
+  cre_screen <- makeGRangesFromDataFrame(
+    GRCh38.cCREs,
+    seqnames.field = "chr",
+    start.field    = "start",
+    end.field      = "end",
+    keep.extra.columns = TRUE
+  )
+
+  colnames(mcols(cre_screen))[1:3] <- c("DNase_CREs","cCRE_id","cCRE_type" )
+
+
+  master_annotated <- annotate_regions(master_clean)
+  write_tsv(master_annotated, "MASTER_CLEAN_epivariants_ANNOTATED.tsv")
+
+  cat("\n=== ANNOTATION SUMMARY ===\n")
+  cat("\nGenomic feature by class:\n")
+  print(table(master_annotated$annotation_broad, master_annotated$epivariant_class))
+  cat("\nCpG island context by class:\n")
+  print(table(master_annotated$cpgi_context, master_annotated$epivariant_class))
+  cat("\nIn ENCODE cCRE:\n")
+  print(table(master_annotated$in_cre, master_annotated$epivariant_class))
+
+#! 5. Describe beta value context of epivariants
+
+  # ============================================================
+  # SECTION 2: BETA VALUE CONTEXT TABLE
+  # ============================================================
+  # For each epivariant region, for each flagged sample, per CpG:
+  #
+  #   Background = NR samples (the reference population that
+  #                defined "normal" in epimutations())
+  #              + R or MR samples NOT carrying this epivariant
+  #
+  #   Epivariant = the specific R or MR sample(s) flagged as
+  #                outliers relative to that background
+  #
+  # delta_beta = epivariant_beta - background_mean
+  # This quantifies HOW FAR the outlier is from the reference.
+  # avg beta for non-epivariant samples vs individual epivariant sample values
+  # ============================================================
+
+  library(tidyverse)
+  library(SummarizedExperiment)
+  library(ggplot2)
+  library(patchwork)
+  library(viridis)
+  library(minfi)
+  
+  # Load from files if starting fresh
+  # clean_R            <- read_tsv("CLEAN_epivariants_R_vs_NR.tsv")
+  # clean_MR           <- read_tsv("CLEAN_epivariants_MR_vs_NR.tsv")
+  # shared_epivariants <- read_tsv("SHARED_epivariants_R_and_MR.tsv")
+  # master_clean       <- read_tsv("MASTER_CLEAN_epivariants.tsv")
+
+  # Convenience: extract beta matrix and sample metadata once
+  beta_mat    <- getBeta(grset)
+  sample_info <- colData(grset) %>%
+    as.data.frame() %>%
+    rownames_to_column("sample_id") %>%
+    dplyr::select(sample_id, response = LiResponse)
+
+  nr_samples <- sample_info %>% filter(response == "NR") %>% pull(sample_id)
+  r_samples  <- sample_info %>% filter(response == "R")  %>% pull(sample_id)
+  mr_samples <- sample_info %>% filter(response == "MR") %>% pull(sample_id)
+
+  cat("Sample counts — NR:", length(nr_samples),
+      "| R:", length(r_samples),
+      "| MR:", length(mr_samples), "\n")
+
+  beta_context <- build_beta_context(master_annotated)
+  write_tsv(beta_context, "beta_context_table_CLEAN.tsv")
+
+  cat("\n=== BETA CONTEXT SUMMARY ===\n")
+  beta_context %>%
+    group_by(epivariant_class, consensus_direction) %>%
+    summarise(
+      n_cpg_sample_pairs = n(),
+      mean_delta_beta_detail    = round(mean(delta_beta_detail,     na.rm = TRUE), 3),
+      mean_abs_delta_detail     = round(mean(abs_delta_beta_detail, na.rm = TRUE), 3),
+      median_nSD_detail         = round(median(n_sd_from_bg_detail, na.rm = TRUE), 1),
+      pct_above_02_detail       = round(mean(abs_delta_beta_detail >= 0.2, na.rm = TRUE) * 100, 1),
+      mean_delta_beta_general    = round(mean(delta_beta_general,     na.rm = TRUE), 3),
+      mean_abs_delta_general     = round(mean(abs_delta_beta_general, na.rm = TRUE), 3),
+      median_nSD_general         = round(median(n_sd_from_bg_general, na.rm = TRUE), 1),
+      pct_above_02_general       = round(mean(abs_delta_beta_general >= 0.2, na.rm = TRUE) * 100, 1),
+      .groups = "drop"
+    ) %>%
+    print()
+
+#! 6. beta context bt region 
+
+    effect_per_region <- beta_context %>%
+    group_by(region_id) %>%
+    summarise(
+      mean_delta_beta_detail = mean(delta_beta_detail,     na.rm = TRUE),
+      mean_abs_delta_detail  = mean(abs_delta_beta_detail, na.rm = TRUE),
+      median_nSD_detail      = median(n_sd_from_bg_detail, na.rm = TRUE),
+      pct_cpgs_02     = mean(abs_delta_beta_detail >= 0.2, na.rm = TRUE) * 100,
+      mean_delta_beta_general = mean(delta_beta_general,     na.rm = TRUE),
+      mean_abs_delta_general  = mean(abs_delta_beta_general, na.rm = TRUE),
+      median_nSD_general      = median(n_sd_from_bg_general, na.rm = TRUE),
+      pct_cpgs_02_general     = mean(abs_delta_beta_general >= 0.2, na.rm = TRUE) * 100,
+      .groups = "drop"
+    )
+
+
+   effect_per_region_per_sample <- beta_context %>%
+    group_by(region_id, sample_id) %>%
+    summarise(
+      mean_delta_beta_detail = mean(delta_beta_detail,     na.rm = TRUE),
+      mean_abs_delta_detail  = mean(abs_delta_beta_detail, na.rm = TRUE),
+      median_nSD_detail      = median(n_sd_from_bg_detail, na.rm = TRUE),
+      pct_cpgs_02     = mean(abs_delta_beta_detail >= 0.2, na.rm = TRUE) * 100,
+      mean_delta_beta_general = mean(delta_beta_general,     na.rm = TRUE),
+      mean_abs_delta_general  = mean(abs_delta_beta_general, na.rm = TRUE),
+      median_nSD_general      = median(n_sd_from_bg_general, na.rm = TRUE),
+      pct_cpgs_02_general     = mean(abs_delta_beta_general >= 0.2, na.rm = TRUE) * 100,
+      .groups = "drop"
+    )
+
+#! 7. Identify hotspots of epivariation
+
+dbscan_clusters <- dbscan_clustering(master_annotated, eps_kb = 10, min_points = 3)
+
+
+clusters_50pct <- overlap_clustering(master_annotated, min_overlap_pct = 50)
+clusters_10pct <- overlap_clustering(master_annotated, min_overlap_pct = 10)
+
+
+clusters_50pct$epi_df_clustered <- clusters_50pct$epi_df_clustered[order(clusters_50pct$epi_df_clustered$overlap_cluster_id) , ]
+
+
+clusters_1kb <- proximity_clustering(master_annotated, max_distance = 1000)
+clusters_500bp <- proximity_clustering(master_annotated, max_distance = 500)
+
+
+# Usage:
+epi_clean_clustered <- hybrid_clustering(master_annotated)
+
+# Now filter to truly clustered regions:
+epi_truly_clustered <- epi_clean_clustered %>%
+  filter(is_truly_clustered == TRUE)
+
+#! 9. BETA LONG etc
+
+  # A. Raw beta values, no flags
+  bl_base        <- build_beta_long_base(grset, chr_filter = NULL, max_cpgs = NULL)
+  beta_long_base <- bl_base$beta_long_base
+  cpg_positions  <- bl_base$cpg_positions
+
+  # B. All possible epivariant region→cpg→sample mappings
+  lookup_mega    <- build_epivariant_lookup_mega(
+    unified_summary = unified_summary,
+    cpg_positions   = cpg_positions
+  )
