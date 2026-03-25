@@ -505,6 +505,7 @@ epi_clean_clustered <- hybrid_clustering(master_annotated)
     group_by(region_id) %>%
     summarise(
       n_cpg_sample_pairs     = n(),
+      mean_nSD_detail_bg = round(mean(beta_bg_sd_detail, na.rm=TRUE), 3),
       mean_delta_detail      = round(mean(delta_beta_detail,      na.rm=TRUE), 3),
       mean_abs_delta_detail  = round(mean(abs_delta_beta_detail,  na.rm=TRUE), 3),
       median_nSD_detail      = round(median(n_sd_from_bg_detail,  na.rm=TRUE), 2),
@@ -576,14 +577,29 @@ epi_clean_clustered <- hybrid_clustering(master_annotated)
 
   # 5. total filtered by annotation (promoter, enhancer etc )
 
+
+
+
+
+
   # 6. total filtered by beta context (e.g. mean_abs_delta_detail > 0.2 or 0.15)
+epi_beta_filtered_1 <- get_epivariants( beta_context_filter = list(mean_abs_delta_detail = 0.15) ) #
+epi_beta_filtered_2 <- get_epivariants( beta_context_filter = list(pct_cpgs_02_detail ≥ 50% ) ) #
+epi_beta_filtered_3 <- get_epivariants( beta_context_filter = list(median_nSD_detail ≥ 3) ) #
+epi_beta_filtered_strict <- get_epivariants( beta_context_filter = list(mean_abs_delta_detail = 0.15,pct_cpgs_02_detail ≥ 50%)  ) #
+
+beta_bg_sd_detail
+
 
   # 7. total filtered by annotation ( cg island context + cre overlap etc )
 
 
+  epi_shores <- get_epivariants( !annotation_filter =list(cpgi_context = c("shores", "shelves", "islands")) ) # 
+  epi_cCRE <- get_epivariants( annotation_filter = list(in_cre = "Yes") )
 
-
-
+ [1] "shores"                       "shelves,shores"               "islands"                      "islands,shores"              
+ [5] "shelves"                      "inter"                        "islands,shelves,shores"       "inter,shelves"               
+ [9] "inter,shelves,shores"         "inter,islands,shelves,shores"
 
 
 # FILTERING BASEDON HOTSPOTS
@@ -621,6 +637,35 @@ epi_MR_hotspot_enriched <- enrich_clusters(
   sample_col    = "samples_final"
 )
 
+
+
+strong_hotspots <- epi_enriched %>%
+    filter(
+        in_canonical_cluster
+    )
+
+strong_hotspots1 <- epi_enriched %>%
+  filter(
+    in_canonical_cluster,
+    direction_concordance %in% c("all_hyper", "all_hypo")
+  )
+
+strong_hotspots2 <- epi_enriched %>%
+  filter(
+    in_canonical_cluster,
+    direction_concordance %in% c("all_hyper", "all_hypo"),
+    cluster_mean_abs_delta_detail > 0.2  # effect size filter
+  )
+
+strong_hotspots3 <- epi_enriched %>%
+  filter(
+    in_canonical_cluster,
+    direction_concordance %in% c("all_hyper", "all_hypo"),
+    cluster_mean_abs_delta_detail > 0.1  # effect size filter
+  )
+
+write_tsv(epi_enriched, "MASTER_CLEAN_epivariants_CLUSTERED_ENRICHED.tsv")
+write_tsv(strong_hotspots, "STRONG_HOTSPOTS.tsv")
 
 #APPLY filters to the enriched hotspot tables as needed, e.g.:
 
