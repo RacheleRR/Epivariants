@@ -680,6 +680,76 @@ proximity_clustering <- function(epi_df,
   )
 }
 
+
+library(tidyverse)
+
+# ============================================================
+# FIX 1: SAFE PROXIMITY CLUSTERING
+# The original can silently misassign clusters if GRanges
+# ordering differs from epi_df row order. This version
+# explicitly matches by region_id.
+# ============================================================
+
+proximity_clustering <- function(epi_df,
+                                       max_distance  = 1000,
+                                       min_cluster_size = 2) {
+  library(GenomicRanges)
+
+  epi_gr <- makeGRangesFromDataFrame(
+    epi_df,
+    seqnames.field     = "chromosome",
+    start.field        = "start",
+    end.field          = "end",
+    keep.extra.columns = TRUE
+  )
+
+  # Attach row index BEFORE reduce so we can trace back
+  epi_gr$original_idx <- seq_len(length(epi_gr))
+
+  clusters_gr <- reduce(epi_gr,
+                        min.gapwidth  = max_distance,
+                        with.revmap   = TRUE)
+
+  revmap <- as.list(mcols(clusters_gr)$revmap)
+
+  cluster_df <- tibble(
+    prox_cluster_id  = paste0("PC", str_pad(seq_along(clusters_gr), 4, pad = "0")),
+    chr              = as.character(seqnames(clusters_gr)),
+    cluster_start    = start(clusters_gr),
+    cluster_end      = end(clusters_gr),
+    cluster_width_kb = round(width(clusters_gr) / 1000, 2),
+    n_epivariants    = lengths(revmap),
+    member_indices   = revmap          # original row indices
+  ) %>%
+    filter(n_epivariants >= min_cluster_size)
+
+  # Build assignment table using the stored original_idx
+  cluster_assignments <- map_dfr(seq_len(nrow(cluster_df)), function(i) {
+    orig_rows <- cluster_df$member_indices[[i]]
+    tibble(
+      region_id        = epi_df$region_id[orig_rows],   # safe: index into epi_df directly
+      prox_cluster_id  = cluster_df$prox_cluster_id[i],
+      cluster_n        = cluster_df$n_epivariants[i],
+      cluster_width_kb = cluster_df$cluster_width_kb[i]
+    )
+  })
+
+   epi_df_clustered <- epi_df %>%
+    left_join(cluster_assignments, by = "region_id") %>%
+    mutate(in_proximity_cluster = !is.na(prox_cluster_id))
+  cat("Proximity clustering (max_distance =", max_distance, "bp):\n")
+  cat("  Total epivariants:        ", nrow(epi_df), "\n")
+  cat("  In proximity clusters:    ", sum(epi_df_clustered$in_proximity_cluster), "\n")
+  cat("  Unique clusters:          ", n_distinct(na.omit(epi_df_clustered$prox_cluster_id)), "\n")
+  cat("  Median cluster size:      ", median(cluster_df$n_epivariants), "\n")
+  cat("  Median cluster width (kb):", median(cluster_df$cluster_width_kb), "\n")
+  
+  list(
+    epi_df_clustered = epi_df_clustered,
+    cluster_summary = cluster_df
+  )
+}
+
 # ============================================================
 # HYBRID CLUSTERING PIPELINE
 # Combine multiple clustering methods
@@ -701,20 +771,25 @@ hybrid_clustering <- function(epi_df) {
   
 
   
-  # 4. DBSCAN (density-based)
+  # 3. DBSCAN (density-based)
   cat("\nStep 4: DBSCAN clustering...\n")
   dbs <- dbscan_clustering(epi_df, eps_kb = 10, min_points = 3)
   epi_df <- dbs$epi_df_clustered
   
-  # 5. Create unified cluster score
+  # 4. Create unified cluster score
+  # In hybrid_clustering(), replace the final mutate:
   epi_df <- epi_df %>%
     mutate(
-      n_clustering_methods = (
-        as.integer(in_proximity_cluster) +
-        as.integer(in_overlap_cluster) +
-        as.integer(in_dbscan_cluster)
-      ),
-      is_truly_clustered = n_clustering_methods >= 2  # ← at least 2 methods agree
+      n_clustering_methods = as.integer(in_proximity_cluster) +
+                            as.integer(in_overlap_cluster) +
+                            as.integer(in_dbscan_cluster),
+      
+      # Spatial consensus alone
+      is_spatially_clustered = n_clustering_methods >= 2,
+      
+      # Placeholder — will be filled by enrich_clusters()
+      # Don't try to compute biology here
+      is_truly_clustered = is_spatially_clustered
     )
   
   cat("\n", paste(rep("=", 70), collapse = ""), "\n")
@@ -974,3 +1049,92 @@ hybrid_clustering <- function(epi_df) {
     
     bc
   }
+
+
+# filtering 
+
+
+    # --- Annotation filter ---
+    filter_by_annotation <- function(df,
+                                    features    = NULL,   # e.g. c("Promoter","5'UTR")
+                                    cpgi        = NULL,   # e.g. c("island","shore")
+                                    require_cre = FALSE) {
+    out <- df
+    if (!is.null(features))  out <- filter(out, annotation_broad %in% features)
+    if (!is.null(cpgi))      out <- filter(out, cpgi_context     %in% cpgi)
+    if (require_cre)         out <- filter(out, in_cre == TRUE)
+    cat("After annotation filter:", nrow(out), "of", nrow(df), "regions kept\n")
+    return(out)
+    }
+
+    # --- Beta context filter ---
+    filter_by_beta_context <- function(df,
+                                        min_abs_delta  = 0.2,   # effect size threshold
+                                        min_pct_cpgs   = 50,    # % of CpGs above threshold
+                                        min_median_nSD = NULL,  # optional SD cutoff
+                                        use_detail     = TRUE) {
+    
+    suffix <- if (use_detail) "detail" else "general"
+    
+    delta_col <- paste0("mean_abs_delta_", suffix)
+    pct_col   <- paste0("pct_cpgs_02_",   suffix)
+    nsd_col   <- paste0("median_nSD_",    suffix)
+    
+    out <- df
+    if (!is.null(min_abs_delta))  out <- filter(out, .data[[delta_col]] >= min_abs_delta)
+    if (!is.null(min_pct_cpgs))   out <- filter(out, .data[[pct_col]]   >= min_pct_cpgs)
+    if (!is.null(min_median_nSD)) out <- filter(out, .data[[nsd_col]]   >= min_median_nSD)
+    
+    cat("After beta context filter:", nrow(out), "of", nrow(df), "regions kept\n")
+    return(out)
+    }
+
+
+
+    # ============================================================
+    # LAYER 4: QUERY FUNCTION
+    # The single entry point for all 15 combinations
+    # ============================================================
+
+    get_epivariants <- function(
+        # Which class?
+        classes        = c("R_only", "MR_only", "Shared_R_and_MR"),
+        
+        # Annotation: NULL = add info only, list = filter by these
+        annotation_filter = NULL,   # e.g. list(features = "Promoter", require_cre = TRUE)
+        
+        # Beta context: NULL = add info only, list = filter by these
+        beta_filter    = NULL,       # e.g. list(min_abs_delta = 0.2, min_pct_cpgs = 50)
+        
+        # Hotspots: NULL = add info only, TRUE = keep only hotspot regions
+        hotspot_filter = NULL        # TRUE = keep only hotspot regions
+    ) {
+    
+    out <- master_full %>%
+        filter(epivariant_class %in% classes)
+    
+    cat("Starting with", nrow(out), "regions\n")
+    
+    # Apply annotation filter if requested
+    if (!is.null(annotation_filter)) {
+        out <- do.call(filter_by_annotation,
+                    c(list(df = out), annotation_filter))
+    }
+    
+    # Apply beta context filter if requested
+    if (!is.null(beta_filter)) {
+        out <- do.call(filter_by_beta_context,
+                    c(list(df = out), beta_filter))
+    }
+    
+    # Apply hotspot filter if requested
+    if (isTRUE(hotspot_filter)) {
+        out <- filter_by_hotspot(out, keep_only_hotspots = TRUE)
+    }
+    
+    cat("Final:", nrow(out), "regions\n\n")
+    return(out)
+    }
+
+
+#
