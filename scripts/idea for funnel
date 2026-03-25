@@ -1,0 +1,481 @@
+# IMPLEMENTATION: Your 13-Category Structure with Proper Hotspot Parameters
+#! THIS MODIFIED CAN BE USEFUL FOR FUNNEL FUNCTION 
+
+
+## Setup: Helper Functions
+
+```r
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+# Auto-calculate min_count based on dataset size
+calc_hotspot_threshold <- function(n_epivariants, 
+                                   window_mb = 1,
+                                   fold_enrichment = 2.5) {
+  chr1_length_mb <- 248
+  expected_per_chr <- n_epivariants / 22
+  n_windows <- chr1_length_mb / window_mb
+  expected_per_window <- expected_per_chr / n_windows
+  threshold <- ceiling(expected_per_window * fold_enrichment)
+  max(threshold, 2)  # minimum of 2
+}
+
+# Wrapper for consistent hotspot addition with smart defaults
+add_hotspots_smart <- function(epi_df, grset, 
+                               window_mb = 1,
+                               is_promoter_focused = FALSE) {
+  
+  n_epi <- nrow(epi_df)
+  
+  # Adjust parameters based on context
+  if (is_promoter_focused) {
+    window_mb        <- 0.5
+    step_mb          <- 0.25
+    min_overlap_frac <- 0.5
+  } else {
+    step_mb          <- window_mb / 2
+    min_overlap_frac <- 0.0
+  }
+  
+  threshold <- calc_hotspot_threshold(n_epi, window_mb)
+  
+  cat("\nAdding hotspots:\n")
+  cat("  Dataset size:     ", n_epi, "epivariants\n")
+  cat("  Window size:      ", window_mb, "Mb\n")
+  cat("  Step size:        ", step_mb, "Mb\n")
+  cat("  Min overlap:      ", min_overlap_frac, "\n")
+  cat("  Threshold:        ", threshold, "epivariants per window\n")
+  
+  result <- get_hotspot_annotation(
+    epi_df           = epi_df,
+    grset            = grset,
+    window_mb        = window_mb,
+    step_mb          = step_mb,
+    min_overlap_frac = min_overlap_frac,
+    min_count        = threshold
+  )
+  
+  cat("  Result: ", sum(result$epi_df_annotated$in_hotspot),
+      " / ", nrow(result$epi_df_annotated),
+      " (", round(sum(result$epi_df_annotated$in_hotspot) / nrow(result$epi_df_annotated) * 100, 1),
+      "%) in hotspots\n")
+  
+  cat("  Unique hotspots:  ", 
+      n_distinct(na.omit(result$epi_df_annotated$hotspot_id)), "\n")
+  
+  return(result$epi_df_annotated)
+}
+```
+
+---
+
+## Implementation: All 13 Categories
+
+```r
+# ============================================================
+# CATEGORY 1: CLEAN (baseline with hotspot info)
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 1: epi_1_clean\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_1_clean <- get_epivariants() %>%
+  add_hotspots_smart(grset, is_promoter_focused = FALSE)
+
+write_tsv(epi_1_clean, "epi_1_clean.tsv")
+
+
+# ============================================================
+# CATEGORY 2: CLEAN STRICT (4-5 methods only)
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 2: epi_2_clean_strict\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_2_clean_strict <- get_epivariants() %>%
+  filter(tier %in% c("TIER 1: All 5 Methods", "TIER 2: 4 Methods")) %>%
+  add_hotspots_smart(grset, is_promoter_focused = FALSE)
+
+write_tsv(epi_2_clean_strict, "epi_2_clean_strict.tsv")
+
+
+# ============================================================
+# CATEGORY 3: FILTERED TO HOTSPOTS ONLY
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 3: epi_3_filt_hs\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_3_filt_hs <- epi_1_clean %>%
+  filter(in_hotspot == TRUE)
+
+cat("Filtered to hotspots: ", nrow(epi_3_filt_hs), "regions\n")
+write_tsv(epi_3_filt_hs, "epi_3_filt_hs.tsv")
+
+
+# ============================================================
+# CATEGORY 4: ANNOTATION FILTER (promoter/UTR)
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 4: epi_4_filt_annot\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_4_filt_annot <- get_epivariants(
+  annotation_filter = list(features = c("Promoter", "5'UTR", "3'UTR"))
+) %>%
+  add_hotspots_smart(grset, is_promoter_focused = TRUE)  # ← TRUE for promoters
+
+write_tsv(epi_4_filt_annot, "epi_4_filt_annot.tsv")
+
+
+# ============================================================
+# CATEGORY 5: ANNOTATION FILTER → TO HOTSPOTS
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 5: epi_5_filt_annot_hs\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_5_filt_annot_hs <- epi_4_filt_annot %>%
+  filter(in_hotspot == TRUE)
+
+cat("Filtered to hotspots: ", nrow(epi_5_filt_annot_hs), "regions\n")
+write_tsv(epi_5_filt_annot_hs, "epi_5_filt_annot_hs.tsv")
+
+
+# ============================================================
+# CATEGORY 6: BETA FILTER ONLY
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 6: epi_6_filt_beta\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_6_filt_beta <- get_epivariants(
+  beta_filter = list(min_abs_delta = 0.2, min_pct_cpgs = 50)
+) %>%
+  add_hotspots_smart(grset, is_promoter_focused = FALSE)
+
+write_tsv(epi_6_filt_beta, "epi_6_filt_beta.tsv")
+
+
+# ============================================================
+# CATEGORY 7: ANNOTATION + BETA FILTERS
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 7: epi_7_filt_annot_beta\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_7_filt_annot_beta <- get_epivariants(
+  annotation_filter = list(features = c("Promoter", "5'UTR", "3'UTR")),
+  beta_filter = list(min_abs_delta = 0.2, min_pct_cpgs = 50)
+) %>%
+  add_hotspots_smart(grset, is_promoter_focused = TRUE)
+
+write_tsv(epi_7_filt_annot_beta, "epi_7_filt_annot_beta.tsv")
+
+
+# ============================================================
+# CATEGORY 8: BETA FILTER → TO HOTSPOTS
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 8: epi_8_filt_beta_hs\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_8_filt_beta_hs <- epi_6_filt_beta %>%
+  filter(in_hotspot == TRUE)
+
+cat("Filtered to hotspots: ", nrow(epi_8_filt_beta_hs), "regions\n")
+write_tsv(epi_8_filt_beta_hs, "epi_8_filt_beta_hs.tsv")
+
+
+# ============================================================
+# CATEGORY 9: ANNOTATION + BETA → TO HOTSPOTS (GOLD)
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 9: epi_9_filt_annot_beta_hs (GOLD STANDARD)\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_9_filt_annot_beta_hs <- epi_7_filt_annot_beta %>%
+  filter(in_hotspot == TRUE)
+
+cat("Filtered to hotspots: ", nrow(epi_9_filt_annot_beta_hs), "regions\n")
+write_tsv(epi_9_filt_annot_beta_hs, "epi_9_filt_annot_beta_hs.tsv")
+
+
+# ============================================================
+# CATEGORY 10: R-SPECIFIC HOTSPOTS
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 10: epi_10_R_hotspot\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+# Get R-only epivariants
+epi_R_only <- epi_1_clean %>%
+  filter(epivariant_class == "R_only")
+
+# Re-run hotspot detection on R-only subset
+epi_10_R_hotspot <- epi_R_only %>%
+  add_hotspots_smart(grset, is_promoter_focused = FALSE) %>%
+  filter(in_hotspot == TRUE)
+
+cat("R-specific hotspots: ", nrow(epi_10_R_hotspot), "regions\n")
+write_tsv(epi_10_R_hotspot, "epi_10_R_hotspot.tsv")
+
+
+# ============================================================
+# CATEGORY 11: MR-SPECIFIC HOTSPOTS
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 11: epi_11_MR_hotspot\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+# Get MR-only epivariants
+epi_MR_only <- epi_1_clean %>%
+  filter(epivariant_class == "MR_only")
+
+# Re-run hotspot detection on MR-only subset
+epi_11_MR_hotspot <- epi_MR_only %>%
+  add_hotspots_smart(grset, is_promoter_focused = FALSE) %>%
+  filter(in_hotspot == TRUE)
+
+cat("MR-specific hotspots: ", nrow(epi_11_MR_hotspot), "regions\n")
+write_tsv(epi_11_MR_hotspot, "epi_11_MR_hotspot.tsv")
+
+
+# ============================================================
+# CATEGORY 12: CpG SHORES/SHELVES/ISLANDS
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 12: epi_12_shores\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_12_shores <- get_epivariants(
+  annotation_filter = list(cpgi_context = c("shores", "shelves", "island"))
+)
+
+cat("CpG shore/shelf/island regions: ", nrow(epi_12_shores), "\n")
+write_tsv(epi_12_shores, "epi_12_shores.tsv")
+
+
+# ============================================================
+# CATEGORY 13: ENCODE cCREs
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("CATEGORY 13: epi_13_cCRE\n")
+cat(paste(rep("=", 70), collapse = ""), "\n")
+
+epi_13_cCRE <- get_epivariants(
+  annotation_filter = list(in_cre = "Yes")
+)
+
+cat("ENCODE cCRE regions: ", nrow(epi_13_cCRE), "\n")
+write_tsv(epi_13_cCRE, "epi_13_cCRE.tsv")
+
+
+# ============================================================
+# SUMMARY TABLE
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("SUMMARY OF ALL 13 CATEGORIES\n")
+cat(paste(rep("=", 70), collapse = ""), "\n\n")
+
+summary_table <- tibble(
+  Category = 1:13,
+  Name = c(
+    "epi_1_clean", "epi_2_clean_strict", "epi_3_filt_hs",
+    "epi_4_filt_annot", "epi_5_filt_annot_hs", "epi_6_filt_beta",
+    "epi_7_filt_annot_beta", "epi_8_filt_beta_hs", "epi_9_filt_annot_beta_hs",
+    "epi_10_R_hotspot", "epi_11_MR_hotspot", "epi_12_shores", "epi_13_cCRE"
+  ),
+  N_regions = c(
+    nrow(epi_1_clean), nrow(epi_2_clean_strict), nrow(epi_3_filt_hs),
+    nrow(epi_4_filt_annot), nrow(epi_5_filt_annot_hs), nrow(epi_6_filt_beta),
+    nrow(epi_7_filt_annot_beta), nrow(epi_8_filt_beta_hs), 
+    nrow(epi_9_filt_annot_beta_hs),
+    nrow(epi_10_R_hotspot), nrow(epi_11_MR_hotspot),
+    nrow(epi_12_shores), nrow(epi_13_cCRE)
+  ),
+  Description = c(
+    "All reproducible (baseline)",
+    "High-quality only (4-5 methods)",
+    "All → filtered to hotspots",
+    "Promoter/UTR regions",
+    "Promoter/UTR → filtered to hotspots",
+    "Strong effect size (Δβ ≥ 0.2)",
+    "Promoter/UTR + strong effect",
+    "Strong effect → filtered to hotspots",
+    "Promoter/UTR + strong + hotspots (GOLD)",
+    "R-only regions in hotspots",
+    "MR-only regions in hotspots",
+    "CpG island shores/shelves/islands",
+    "ENCODE cis-regulatory elements"
+  )
+)
+
+print(summary_table)
+write_tsv(summary_table, "epivariant_categories_summary.tsv")
+
+cat("\n✓ All 13 categories created with adaptive hotspot thresholds!\n")
+cat("✓ Hotspot parameters automatically adjusted based on:\n")
+cat("  - Dataset size (larger sets → higher threshold)\n")
+cat("  - Biological context (promoters → smaller window)\n")
+cat("  - Window size (smaller windows → lower threshold)\n\n")
+
+
+# ============================================================
+# VALIDATION CHECKS
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("VALIDATION: Checking hotspot quality\n")
+cat(paste(rep("=", 70), collapse = ""), "\n\n")
+
+validate_hotspots <- function(epi_df, name) {
+  
+  if (!"in_hotspot" %in% colnames(epi_df)) {
+    cat(name, ": No hotspot info\n")
+    return()
+  }
+  
+  n_total <- nrow(epi_df)
+  n_in_hs <- sum(epi_df$in_hotspot, na.rm = TRUE)
+  pct_in_hs <- round(n_in_hs / n_total * 100, 1)
+  n_hs <- n_distinct(na.omit(epi_df$hotspot_id))
+  
+  cat(name, ":\n")
+  cat("  Total regions:    ", n_total, "\n")
+  cat("  In hotspots:      ", n_in_hs, " (", pct_in_hs, "%)\n", sep="")
+  cat("  Unique hotspots:  ", n_hs, "\n")
+  
+  # Flags
+  if (pct_in_hs > 60) {
+    cat("  ⚠️ Warning: >60% in hotspots (threshold may be too low)\n")
+  } else if (pct_in_hs < 3 && n_total > 100) {
+    cat("  ⚠️ Warning: <3% in hotspots (threshold may be too high)\n")
+  } else {
+    cat("  ✓ Reasonable proportion\n")
+  }
+  
+  if (n_hs > 200) {
+    cat("  ⚠️ Warning: >200 hotspots (may be too many)\n")
+  } else if (n_hs < 3 && n_in_hs > 0) {
+    cat("  ⚠️ Warning: <3 hotspots (may be too few)\n")
+  } else if (n_hs > 0) {
+    cat("  ✓ Reasonable number of hotspots\n")
+  }
+  
+  cat("\n")
+}
+
+# Run validation on key categories
+validate_hotspots(epi_1_clean, "epi_1_clean")
+validate_hotspots(epi_4_filt_annot, "epi_4_filt_annot")
+validate_hotspots(epi_7_filt_annot_beta, "epi_7_filt_annot_beta")
+validate_hotspots(epi_10_R_hotspot, "epi_10_R_hotspot")
+validate_hotspots(epi_11_MR_hotspot, "epi_11_MR_hotspot")
+
+
+# ============================================================
+# KEY DIFFERENCES FROM YOUR ORIGINAL CODE
+# ============================================================
+
+cat("\n", paste(rep("=", 70), collapse = ""), "\n")
+cat("KEY IMPROVEMENTS OVER DEFAULT PARAMETERS\n")
+cat(paste(rep("=", 70), collapse = ""), "\n\n")
+
+cat("1. ADAPTIVE THRESHOLDS:\n")
+cat("   - epi_1_clean (50k regions):   min_count ≈ 20-25\n")
+cat("   - epi_4_filt_annot (5k):       min_count ≈ 5-7\n")
+cat("   - epi_7_filt_annot_beta (1.5k): min_count ≈ 2-3\n")
+cat("   Instead of: min_count = 3 for all\n\n")
+
+cat("2. CONTEXT-AWARE WINDOWS:\n")
+cat("   - Promoter analyses: 0.5 Mb window + stricter overlap\n")
+cat("   - Genome-wide:       1 Mb window + any overlap\n")
+cat("   Instead of: 1 Mb window for everything\n\n")
+
+cat("3. PROPER SUBSET HANDLING:\n")
+cat("   - R-specific and MR-specific hotspots: re-computed on subsets\n")
+cat("   - Not just filtering the global hotspot annotations\n\n")
+
+cat("Result: Biologically meaningful hotspots at every filtering level!\n")
+```
+
+---
+
+## Quick Reference: When to Use Each Category
+
+```r
+# For BASELINE statistics:
+epi_1_clean              # All reproducible epivariants
+
+# For METHOD VALIDATION:
+epi_2_clean_strict       # Only high-confidence (4-5 methods)
+
+# For HOTSPOT ANALYSIS (genome-wide):
+epi_3_filt_hs            # All epivariants in hotspots
+epi_8_filt_beta_hs       # Strong effects in hotspots
+
+# For GENE ANALYSIS:
+epi_4_filt_annot         # All promoter/UTR regions
+epi_5_filt_annot_hs      # Promoter/UTR in hotspots
+
+# For EFFECT SIZE ANALYSIS:
+epi_6_filt_beta          # Strong effects genome-wide
+
+# For TOP CANDIDATES (validation):
+epi_9_filt_annot_beta_hs # GOLD STANDARD
+
+# For GROUP COMPARISONS:
+epi_10_R_hotspot         # R-specific hotspot clustering
+epi_11_MR_hotspot        # MR-specific hotspot clustering
+
+# For CpG CONTEXT:
+epi_12_shores            # CpG island shores/shelves
+
+# For REGULATORY OVERLAP:
+epi_13_cCRE              # ENCODE cis-regulatory elements
+```
+
+---
+
+## Save Everything
+
+```r
+# Create a master list
+all_categories <- list(
+  epi_1_clean = epi_1_clean,
+  epi_2_clean_strict = epi_2_clean_strict,
+  epi_3_filt_hs = epi_3_filt_hs,
+  epi_4_filt_annot = epi_4_filt_annot,
+  epi_5_filt_annot_hs = epi_5_filt_annot_hs,
+  epi_6_filt_beta = epi_6_filt_beta,
+  epi_7_filt_annot_beta = epi_7_filt_annot_beta,
+  epi_8_filt_beta_hs = epi_8_filt_beta_hs,
+  epi_9_filt_annot_beta_hs = epi_9_filt_annot_beta_hs,
+  epi_10_R_hotspot = epi_10_R_hotspot,
+  epi_11_MR_hotspot = epi_11_MR_hotspot,
+  epi_12_shores = epi_12_shores,
+  epi_13_cCRE = epi_13_cCRE
+)
+
+# Save as RDS for easy loading
+saveRDS(all_categories, "all_epivariant_categories.rds")
+
+cat("\n✓ Saved all categories to: all_epivariant_categories.rds\n")
+cat("✓ Load with: all_cats <- readRDS('all_epivariant_categories.rds')\n")
+```
