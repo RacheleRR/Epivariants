@@ -1,0 +1,43 @@
+hotspot_in_context <-function(epi_clean_clustered,in_overlap_cluster) {
+feature_bar1 <- epi_clean_clustered %>%
+    dplyr::count(in_overlap_cluster, cpgi_context) %>%
+    group_by(in_overlap_cluster) %>%
+    mutate(pct = n / sum(n) * 100) %>%
+    ungroup() %>%
+    ggplot(aes(x = in_overlap_cluster, y = pct, fill = cpgi_context)) +
+    geom_col(position = "stack", color = "white", linewidth = 0.3) +
+
+    labs(title = paste("Genomic feature —"),
+         x = NULL, y = "%", fill = "Feature") +
+    theme_minimal(base_size = 11)
+
+
+feature_bar2 <- epi_clean_clustered %>%
+    dplyr::count(in_overlap_cluster, annotation_broad) %>%
+    group_by(in_overlap_cluster) %>%
+    mutate(pct = n / sum(n) * 100) %>%
+    ungroup() %>%
+    ggplot(aes(x = in_overlap_cluster, y = pct, fill = annotation_broad)) +
+    geom_col(position = "stack", color = "white", linewidth = 0.3) +
+    scale_fill_brewer(palette = "Set2") +
+    labs(title = paste("Genomic feature —"),
+         x = NULL, y = "%", fill = "Feature") +
+    theme_minimal(base_size = 11)
+
+ print(feature_bar1 / feature_bar2 + plot_layout(guides = "collect") & theme(legend.position = "bottom"))
+ print(feature_bar1)
+ print(feature_bar2)
+}
+
+
+hotspot_in_context(epi_1_hotspots)
+hotspot_in_context(clusters_10pct$epi_df_clustered )
+hotspot_in_context(epi_1_hotspots, in_proximity_cluster)
+hotspot_in_context(epi_1_hotspots, in_dbscan_cluster)
+hotspot_in_context(strong_hotspots, in_canonical_cluster)
+hotspot_in_context(strong_hotspots1, in_canonical_cluster)
+hotspot_in_context(strong_hotspots2, in_canonical_cluster)
+
+
+
+
