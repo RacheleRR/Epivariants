@@ -1,0 +1,550 @@
+DESCRIPTIVE PACKAGE FUNCTION 
+
+# ============================================================
+# UPDATED DESCRIPTIVE PACKAGE
+# unified_summary is filtered to epi_df regions before use
+# beta_long is passed in (pre-built), never rebuilt here
+# ============================================================
+# ============================================================
+# DESCRIPTIVE PLOT PACKAGE
+# Wraps all existing plots into one callable function
+# ============================================================
+# Required inputs:
+#   epi_df             — any output from get_epivariants()
+#   unified_summary    — from unified_epivariant_analysis()
+#   clean_R, clean_MR  — from filter_epivariants()
+#   shared_epivariants — from shared joining step
+#   beta_long          — wide beta table with epivariant flags
+#   beta_context       — from build_beta_context()
+#   all_epi_data       — raw pooled table (all methods, both comparisons)
+#   label              — string label for titles and filenames
+# ============================================================
+
+plot_package_descriptive <- function(epi_df,
+                                      unified_summary,
+                                      clean_R,
+                                      clean_MR,
+                                      shared_epivariants,
+                                      beta_long,       # from build_beta_long()$beta_long
+                                      beta_context,
+                                      all_epi_data,
+                                      label = "epivariants") {
+  
+  library(tidyverse)
+  library(patchwork)
+  library(viridis)
+  library(ggalluvial)
+  library(ggVennDiagram)
+  library(scales)
+  
+  # ============================================================
+  # FILTER unified_summary TO MATCH epi_df REGIONS ONLY
+  # ============================================================
+  # epi_df is a subset of master_full (any combination from get_epivariants())
+  # unified_summary contains ALL regions (before strict filtering).
+  # We filter it here so all plots reflect the same set of regions
+  # that epi_df represents.
+  
+  epi_region_ids   <- unique(epi_df$region_id)
+  unified_filtered <- unified_summary %>%
+    filter(region_id %in% epi_region_ids)
+  
+  cat("epi_df regions:", length(epi_region_ids),
+      "| unified_summary rows after filter:", nrow(unified_filtered), "\n")
+  
+  # Also filter clean_R / clean_MR to epi_df regions for direction/landscape plots
+  clean_R_f  <- clean_R  %>% filter(region_id %in% epi_region_ids)
+  clean_MR_f <- clean_MR %>% filter(region_id %in% epi_region_ids)
+  
+  # Filter beta_context to epi_df regions
+  beta_context_f <- beta_context %>% filter(region_id %in% epi_region_ids)
+  
+  plots <- list()
+  safe_label <- gsub(" ", "_", label)
+  
+  # ============================================================
+  # 1. CLASS × TIER BAR
+  # ============================================================
+  
+  plots$class_bar <- epi_df %>%
+    dplyr::count(epivariant_class, tier) %>%
+    mutate(epivariant_class = factor(epivariant_class,
+                                     levels = c("R_only","MR_only","Shared_R_and_MR"),
+                                     labels = c("R-only","MR-only","Shared"))) %>%
+    ggplot(aes(x = epivariant_class, y = n, fill = tier)) +
+    geom_col(position = position_dodge(width = 0.7), width = 0.7,
+             color = "black", linewidth = 0.3) +
+    geom_text(aes(label = comma(n), group = tier),
+              position = position_dodge(width = 0.7),
+              vjust = -0.3, size = 3, fontface = "bold") +
+    scale_fill_viridis_d(option = "plasma", begin = 0.2, end = 0.8, name = "Tier") +
+    labs(
+      title    = paste("Class × Tier —", label),
+      subtitle = paste0(
+        "R-only: ",  comma(sum(epi_df$epivariant_class == "R_only")),
+        " | MR-only: ", comma(sum(epi_df$epivariant_class == "MR_only")),
+        " | Shared: ",  comma(sum(epi_df$epivariant_class == "Shared_R_and_MR"))
+      ),
+      x = "Epivariant class", y = "Count"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor   = element_blank(),
+          plot.title         = element_text(face = "bold"),
+          legend.position    = "right")
+  
+  # ============================================================
+  # 2. DIRECTION DISTRIBUTION BY TIER
+  # (uses filtered clean_R_f / clean_MR_f)
+  # ============================================================
+  
+  direction_df <- bind_rows(
+    clean_R_f  %>% dplyr::select(tier, consensus_direction) %>%
+      mutate(comparison_label = "R vs NR"),
+    clean_MR_f %>% dplyr::select(tier, consensus_direction) %>%
+      mutate(comparison_label = "MR vs NR")
+  ) %>%
+    dplyr::count(comparison_label, tier, consensus_direction) %>%
+    group_by(comparison_label) %>%
+    mutate(pct = n / sum(n) * 100) %>%
+    ungroup() %>%
+    mutate(
+      tier_short = gsub(".*?(\\d+)\\D*$", "\\1", tier),
+      tier_short = factor(tier_short, levels = c("1","2","3","4","5"),
+                          labels = c("1","2","3","4","5")),
+      consensus_direction = factor(consensus_direction,
+                                   levels = c("hypermethylation","hypomethylation"),
+                                   labels = c("Hyper","Hypo"))
+    )
+  
+  plots$direction <- ggplot(direction_df,
+                             aes(x = tier_short, y = n, fill = consensus_direction)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.9) +
+    geom_text(aes(label = paste0(comma(n), "\n(", round(pct,1), "%)"),
+                  group = consensus_direction),
+              position = position_dodge(width = 0.8),
+              vjust = -0.3, size = 2.8, lineheight = 0.8) +
+    facet_wrap(~comparison_label, nrow = 1) +
+    scale_fill_manual(values = c("Hyper" = "#D73027", "Hypo" = "#4575B4")) +
+    scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.2))) +
+    labs(title    = paste("Direction distribution —", label),
+         subtitle = "Count and % by tier and comparison",
+         x = "Tier (methods)", y = "Count", fill = "Direction") +
+    theme_minimal(base_size = 11) +
+    theme(strip.text         = element_text(face = "bold"),
+          panel.grid.major.x = element_blank(),
+          legend.position    = "bottom",
+          plot.title         = element_text(face = "bold"))
+  
+  # ============================================================
+  # 3. CHROMOSOME DISTRIBUTION
+  # ============================================================
+  
+  plots$chr_dist <- epi_df %>%
+    dplyr::count(chromosome, epivariant_class) %>%
+    mutate(chromosome = factor(chromosome,
+                               levels = paste0("chr", c(1:22,"X","Y")))) %>%
+    ggplot(aes(x = chromosome, y = n, fill = epivariant_class)) +
+    geom_col(position = "stack", width = 0.8) +
+    scale_fill_manual(values = c("R_only"          = "#2166AC",
+                                 "MR_only"         = "#1A7A4A",
+                                 "Shared_R_and_MR" = "#762A83")) +
+    labs(title = paste("Chromosome distribution —", label),
+         x = NULL, y = "Count", fill = "Class") +
+    theme_minimal(base_size = 9) +
+    theme(axis.text.x     = element_text(angle = 45, hjust = 1, size = 7),
+          legend.position  = "bottom",
+          plot.title       = element_text(face = "bold"))
+  
+  # ============================================================
+  # 4. LANDSCAPE: DIRECTION × SAMPLES × TIER
+  # (uses filtered clean_R_f / clean_MR_f)
+  # ============================================================
+  
+  landscape_df <- bind_rows(
+    clean_R_f  %>% mutate(comparison_label = "R vs NR"),
+    clean_MR_f %>% mutate(comparison_label = "MR vs NR")
+  ) %>%
+    mutate(
+      tier_num    = as.numeric(gsub(".*?(\\d+).*", "\\1", tier)),
+      tier_label  = paste0("Tier ", tier_num),
+      dir_label   = case_when(
+        consensus_direction == "hypermethylation" ~ "Hyper",
+        consensus_direction == "hypomethylation"  ~ "Hypo",
+        TRUE ~ consensus_direction
+      ),
+      n_samps_num = as.numeric(str_extract(as.character(n_samples_final), "^\\d+")),
+      sample_bin  = cut(n_samps_num,
+                        breaks = c(0,1,3,5,10,20,Inf),
+                        labels = c("1","2-3","4-5","6-10","11-20",">20"),
+                        right  = TRUE)
+    )
+  
+  plots$landscape <- landscape_df %>%
+    dplyr::count(comparison_label, tier_label, dir_label, sample_bin) %>%
+    ggplot(aes(x = sample_bin, y = n, fill = dir_label)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.9) +
+    geom_text(aes(label = comma(n), group = dir_label),
+              position = position_dodge(width = 0.8),
+              vjust = -0.3, size = 2.2) +
+    facet_grid(tier_label ~ comparison_label, scales = "free_y", switch = "y") +
+    scale_fill_manual(values = c("Hyper" = "#D73027", "Hypo" = "#4575B4")) +
+    scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+    labs(title    = paste("Landscape: direction × samples × tier —", label),
+         x = "Samples (binned)", y = "Count", fill = "Direction") +
+    theme_minimal(base_size = 10) +
+    theme(axis.text.x       = element_text(angle = 45, hjust = 1, size = 8),
+          strip.text         = element_text(face = "bold", size = 9),
+          strip.placement    = "outside",
+          panel.spacing      = unit(0.4, "lines"),
+          panel.grid.major.x = element_blank(),
+          legend.position    = "bottom",
+          plot.title         = element_text(face = "bold"))
+  
+  # ============================================================
+  # 5. DENSITY — BETA VALUES
+  # beta_long is pre-built; filter to epi_df regions only
+  # ============================================================
+  
+  # For density: keep NR (all CpGs) vs epivariant CpGs of epi_df regions only
+
+
+
+  density_beta_df <- beta_long %>%
+    filter(response == "NR" |
+             (response == "R"  & epivariant == TRUE) |
+             (response == "MR" & epivariant == TRUE)| (response == "R"  & epivariant == FALSE) |
+             (response == "MR" & epivariant == FALSE)) %>%
+    mutate(density_group = case_when(
+      response == "NR" ~ "NR (all samples)",
+      response == "R" & epivariant == TRUE  ~ "R (epivariant only)",
+      response == "MR" & epivariant == TRUE ~ "MR (epivariant only)",
+      response == "R" & epivariant == FALSE ~ "R (non-epivariant)",
+      response == "MR" & epivariant == FALSE ~ "MR (non-epivariant)"
+    ))
+  
+
+  n_nr         <- n_distinct(filter(beta_long, response == "NR")$sample_id)
+  n_r_epi      <- n_distinct(filter(beta_long, response == "R"  & epivariant == TRUE)$sample_id)
+  n_mr_epi     <- n_distinct(filter(beta_long, response == "MR" & epivariant == TRUE)$sample_id)
+  n_r_epi_pts  <- sum(beta_long$response == "R"  & beta_long$epivariant == TRUE, na.rm = TRUE)
+  n_mr_epi_pts <- sum(beta_long$response == "MR" & beta_long$epivariant == TRUE, na.rm = TRUE)
+  
+  plots$density_beta <- ggplot(density_beta_df,
+                                aes(x = beta, color = density_group, fill = density_group)) +
+    geom_density(alpha = 0.3, linewidth = 0.8) +
+    scale_color_manual(values = c("NR (all samples)"     = "grey50",
+                                      "R (epivariant only)"  = "#2166AC",
+                                      "MR (epivariant only)" = "#1A7A4A",
+                                      "R (non-epivariant)"   = "#9E0142",
+                                      "MR (non-epivariant)"  = "#5E3C92")) +
+        scale_fill_manual(values  = c("NR (all samples)"     = "grey50",
+                                      "R (epivariant only)"  = "#2166AC",
+                                      "MR (epivariant only)" = "#1A7A4A",
+                                      "R (non-epivariant)"   = "#9E0142",
+                                      "MR (non-epivariant)"  = "#5E3C92")) +
+    labs(title    = paste("β-value distribution —", label),
+         subtitle = paste0(
+           "R epivariant: n=", n_r_epi,  " samples, ", format(n_r_epi_pts,  big.mark=","), " CpGs | ",
+           "MR epivariant: n=", n_mr_epi, " samples, ", format(n_mr_epi_pts, big.mark=","), " CpGs"
+         ),
+         x = "β-value", y = "Density",
+         caption = "NR = all samples at all CpGs | R/MR = epivariant CpGs only") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom", legend.title = element_blank(),
+          plot.title = element_text(face = "bold"))
+  
+  # ============================================================
+  # 6. DENSITY — DELTA BETA (not abs, from beta_context)
+  # (uses filtered beta_context_f)
+  # ============================================================
+  
+  plots$density_delta <- ggplot(
+    filter(beta_context_f, !is.na(delta_beta_detail)),
+    aes(x = delta_beta_detail, color = epivariant_class, fill = epivariant_class)
+  ) +
+    geom_density(alpha = 0.25, linewidth = 0.8) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.5) +
+    geom_vline(xintercept = c(-0.2, 0.2), linetype = "dotted",
+               color = "red", linewidth = 0.4) +
+    scale_color_manual(values = c("R_only"          = "#2166AC",
+                                  "MR_only"         = "#1A7A4A",
+                                  "Shared_R_and_MR" = "#762A83"),
+                       labels = c("R-only","MR-only","Shared")) +
+    scale_fill_manual(values  = c("R_only"          = "#2166AC",
+                                  "MR_only"         = "#1A7A4A",
+                                  "Shared_R_and_MR" = "#762A83"),
+                      labels  = c("R-only","MR-only","Shared")) +
+    facet_wrap(~consensus_direction, nrow = 1) +
+    labs(title    = paste("Δβ distribution —", label),
+         subtitle = "Epivariant − background (class-aware) | red dotted = ±0.2",
+         x = "Δβ (epivariant − background mean)", y = "Density") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom", legend.title = element_blank(),
+          strip.text = element_text(face = "bold"),
+          plot.title = element_text(face = "bold"))
+  
+  # ============================================================
+  # 7. SAMPLE DISTRIBUTION BY TIER AND COMPARISON TYPE
+  # (uses filtered unified_filtered)
+  # ============================================================
+  
+  sample_dist_df <- unified_filtered %>%
+    group_by(n_samples_total, comparison_type, tier) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    mutate(
+      tier_short = gsub(".*?(\\d+)\\D*$", "\\1", tier),
+      tier_short = factor(tier_short, levels = c("1","2","3","4","5"))
+    )
+  
+  plots$sample_dist <- ggplot(sample_dist_df,
+                               aes(x = n_samples_total, y = count,
+                                   fill = comparison_type)) +
+    geom_col(position = "stack") +
+    facet_wrap(~tier_short, scales = "free_y", nrow = 2, drop = FALSE) +
+    scale_fill_viridis_d(name = "Comparison type") +
+    scale_x_continuous(
+      breaks = seq(0, max(sample_dist_df$n_samples_total, na.rm=TRUE), by=5)
+    ) +
+    labs(title    = paste("Sample count distribution —", label),
+         subtitle = "Epivariants detected in X samples, by tier and comparison",
+         x = "Number of samples", y = "Count") +
+    theme_minimal(base_size = 10) +
+    theme(legend.position  = "bottom",
+          axis.text.x      = element_text(angle = 45, hjust = 1),
+          strip.text        = element_text(face = "bold", size = 10),
+          plot.title        = element_text(face = "bold"))
+  
+  # ============================================================
+  # 8. SHARED DIRECTION AGREEMENT HEATMAP
+  # ============================================================
+  
+  shared_in_epi <- shared_epivariants %>%
+    filter(region_id %in% epi_region_ids)
+  
+  if (nrow(shared_in_epi) > 0) {
+    shared_dir_counts <- shared_in_epi %>%
+      dplyr::count(direction_R, direction_MR) %>%
+      mutate(pct   = n / sum(n) * 100,
+             label = paste0(comma(n), "\n(", round(pct,1), "%)"))
+    
+    agreement_pct <- shared_dir_counts %>%
+      filter(direction_R == direction_MR) %>%
+      summarise(r = sum(n) / sum(shared_dir_counts$n) * 100) %>%
+      pull(r) %>% round(1)
+    
+    plots$shared_dir <- ggplot(shared_dir_counts,
+                                aes(x = direction_R, y = direction_MR, fill = n)) +
+      geom_tile(color = "white", linewidth = 1) +
+      geom_text(aes(label = label), size = 4, fontface = "bold", lineheight = 0.9) +
+      scale_fill_gradientn(
+        colors = c("#F7FBFF","#DEEBF7","#9ECAE1","#3182BD","#08519C"),
+        labels = comma, name = "Count"
+      ) +
+      labs(title    = paste("Shared: direction agreement —", label),
+           subtitle = paste0(comma(nrow(shared_in_epi)),
+                             " shared regions | Agreement: ", agreement_pct, "%"),
+           x = "Direction in R vs NR", y = "Direction in MR vs NR") +
+      theme_minimal(base_size = 12) +
+      theme(panel.grid = element_blank(),
+            plot.title = element_text(face = "bold"),
+            axis.text  = element_text(face = "bold", size = 11))
+  } else {
+    message("No shared epivariants in this subset — skipping shared_dir plot.")
+    plots$shared_dir <- NULL
+  }
+  
+  # ============================================================
+  # 9. SANKEY
+  # (uses filtered unified_filtered)
+  # ============================================================
+  
+  sankey_df <- unified_filtered %>%
+    group_by(tier, epivariant_type, comparison_type) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    mutate(
+      tier            = gsub("TIER \\d+: ", "", tier),
+      epivariant_type = gsub(" \\(.*\\)", "", epivariant_type),
+      tier            = factor(tier,
+                               levels = c("1 Method","2 Methods","3 Methods",
+                                          "4 Methods","All 5 Methods"))
+    ) %>%
+    filter(!tier %in% c("1 Method","2 Methods"))
+  
+  plots$sankey <- ggplot(sankey_df,
+                          aes(y = count,
+                              axis1 = tier,
+                              axis2 = epivariant_type,
+                              axis3 = comparison_type)) +
+    geom_alluvium(aes(fill = tier), width = 1/4, alpha = 0.8, knot.pos = 0.3) +
+    geom_stratum(width = 1/4, fill = "grey90", color = "grey30",
+                 alpha = 0.8, linewidth = 0.3) +
+    geom_text(stat = "stratum",
+              aes(label = paste0(after_stat(stratum),
+                                 "\n(n=", after_stat(count), ")")),
+              size = 3, hjust = 0.5, vjust = 0.5) +
+    scale_x_discrete(limits = c("Tier","Epivariant Type","Comparison Type"),
+                     expand  = c(0.15, 0.15)) +
+    scale_fill_viridis_d() +
+    scale_y_log10(breaks = c(1,5,10,50,100,500,1000,5000),
+                  labels  = comma,
+                  expand  = expansion(mult = c(0.1, 0.2))) +
+    labs(title    = paste("Epivariant flow: tier → type → comparison —", label),
+         subtitle = "Y-axis log10 | tiers ≥ 3 methods",
+         y = "Count (log10)", fill = "Tier") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid      = element_blank(),
+          axis.text.x     = element_text(size = 12, face = "bold"),
+          axis.title.x    = element_blank(),
+          legend.position = "bottom",
+          plot.title      = element_text(face = "bold"),
+          plot.margin     = margin(30,30,30,30))
+  
+  # ============================================================
+  # 10. METHOD CO-OCCURRENCE
+  # (filter all_epi_data to epi_df regions)
+  # ============================================================
+  
+  all_epi_filtered <- all_epi_data %>%
+    filter(region_id %in% epi_region_ids)
+  
+  methods_list <- unique(all_epi_filtered$method)
+  cooc_mat     <- matrix(0, nrow = length(methods_list), ncol = length(methods_list),
+                         dimnames = list(methods_list, methods_list))
+  reg_meth_df  <- all_epi_filtered %>% distinct(region_id, method)
+  
+  for (reg in unique(reg_meth_df$region_id)) {
+    m_in_reg <- reg_meth_df$method[reg_meth_df$region_id == reg]
+    for (m1 in m_in_reg) for (m2 in m_in_reg) {
+      cooc_mat[m1, m2] <- cooc_mat[m1, m2] + 1
+    }
+  }
+  
+  cooc_long <- as.data.frame(as.table(cooc_mat)) %>%
+    setNames(c("Method1","Method2","Cooccurrence")) %>%
+    filter(as.character(Method1) != as.character(Method2))
+  
+  plots$cooccurrence <- ggplot(cooc_long,
+                                aes(x = Method1, y = Method2, fill = Cooccurrence)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(aes(label = format(Cooccurrence, big.mark=",")),
+              size  = 3,
+              color = ifelse(cooc_long$Cooccurrence >
+                               median(cooc_long$Cooccurrence, na.rm=TRUE),
+                             "white","black")) +
+    scale_fill_gradientn(
+      colors = c("white","#21908C","#5DC863","#3B528B","#440154"),
+      values = scales::rescale(c(0, 500, 10000, 100000,
+                                 max(cooc_long$Cooccurrence))),
+      trans  = "pseudo_log",
+      name   = "Co-occurrence"
+    ) +
+    labs(title    = paste("Method co-occurrence —", label),
+         subtitle = "Pseudo-log scale",
+         x = NULL, y = NULL) +
+    theme_minimal(base_size = 11) +
+    theme(axis.text.x       = element_text(angle = 45, hjust = 1, size = 11),
+          panel.grid         = element_blank(),
+          legend.position    = "right",
+          legend.key.height  = unit(1.5, "cm"),
+          plot.title         = element_text(face = "bold"))
+  
+  # ============================================================
+  # 11. VENN DIAGRAM
+  # (filter all_epi_data to epi_df regions)
+  # ============================================================
+  
+  method_regions_list <- split(
+    all_epi_filtered$region_id,
+    all_epi_filtered$method
+  ) %>% lapply(unique)
+  
+  plots$venn <- ggVennDiagram(
+    method_regions_list,
+    label = "count", label_alpha = 0, label_color = "black",
+    label_size = 5, edge_size = 1,
+    set_name_size = 6, set_name_color = "black"
+  ) +
+    scale_fill_gradientn(
+      colors = c("#FDE725","#5DC863","#21908C","#3B528B","#440154"),
+      name   = "Count"
+    ) +
+    labs(title    = paste("Method intersections —", label),
+         subtitle = paste("Regions:", comma(n_distinct(all_epi_filtered$region_id)))) +
+    theme(plot.title      = element_text(hjust = 0.5, face = "bold", size = 14),
+          plot.subtitle   = element_text(hjust = 0.5, size = 12),
+          legend.position = "right")
+  
+  # ============================================================
+  # SAVE
+  # ============================================================
+  
+  walk2(plots, names(plots), function(p, nm) {
+    if (is.null(p)) return()
+    tryCatch(
+      ggsave(paste0("desc_", nm, "_", safe_label, ".png"),
+             p, width = 10, height = 6, dpi = 300),
+      error = function(e) message("Could not save ", nm, ": ", e$message)
+    )
+  })
+  
+  main_grid <- wrap_plots(
+    plots$class_bar, plots$direction, plots$chr_dist, plots$landscape,
+    plots$density_beta, plots$density_delta, plots$sample_dist,
+    if (!is.null(plots$shared_dir)) plots$shared_dir else plot_spacer(),
+    ncol = 2
+  )
+  ggsave(paste0("desc_overview_", safe_label, ".png"),
+         main_grid, width = 20, height = 32, dpi = 300, limitsize = FALSE)
+  
+  method_grid <- wrap_plots(plots$sankey, plots$cooccurrence, plots$venn, ncol = 1)
+  ggsave(paste0("desc_methods_", safe_label, ".png"),
+         method_grid, width = 14, height = 24, dpi = 300, limitsize = FALSE)
+  
+  cat("Saved: desc_overview_", label, ".png | desc_methods_", label, ".png\n")
+  invisible(plots)
+}
+
+
+# ============================================================
+# HOW TO USE — run setup once, then call plots freely
+# ============================================================
+
+
+# --- Build all_epi_data ONCE ---
+all_epi_data <- map_dfr(c(r_dataframes, mr_dataframes), function(df_name) {
+  get(df_name) %>%
+    mutate(
+      region_id  = paste(chromosome, start, end, sep = "_"),
+      comparison = ifelse(grepl("MR_vs_NR", df_name), "MR_vs_NR", "R_vs_NR"),
+      method     = gsub(".*_(beta|manova|mlm|quantile|iForest)_.*", "\\1", df_name)
+    ) %>%
+    filter(!is.na(chromosome), chromosome != 0) %>%
+    dplyr::select(region_id, sample, comparison, method,
+                  chromosome, start, end, outlier_direction, cpg_ids)
+})
+
+# --- Now run any combination freely ---
+desc_plots_clean <- plot_package_descriptive(
+  epi_df             = epi_2_clean,
+  unified_summary    = unified_summary,   # will be filtered internally
+  clean_R            = clean_R,
+  clean_MR           = clean_MR,
+  shared_epivariants = shared_epivariants,
+  beta_long          = beta_long,         # pre-built, passed in
+  beta_context       = beta_context,
+  all_epi_data       = all_epi_data,
+  label              = "2_clean_all"
+)
+
+desc_plots_promoter <- plot_package_descriptive(
+  epi_df             = epi_3B_filt_anno,
+  unified_summary    = unified_summary,
+  clean_R            = clean_R,
+  clean_MR           = clean_MR,
+  shared_epivariants = shared_epivariants,
+  beta_long          = beta_long,
+  beta_context       = beta_context,
+  all_epi_data       = all_epi_data,
+  label              = "3B_promoter_only"
+)
