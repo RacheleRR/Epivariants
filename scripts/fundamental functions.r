@@ -1137,4 +1137,468 @@ hybrid_clustering <- function(epi_df) {
     }
 
 
+# clustering 
+# ============================================================
+# ENHANCED HOTSPOT ANNOTATION
+# Run after: epi_clean_clustered <- hybrid_clustering(master_annotated)
+# Requires:  beta_context, sample_info (with response column)
+# ============================================================
+
+assign_canonical_cluster_ids <- function(epi_clustered,
+                                          min_region_methods = 2) {
+  
+  library(igraph)
+  
+  # ── Step 1: get all pairwise edges from each method ──────────────────────
+  
+  get_method_edges <- function(cluster_col) {
+    df <- epi_clustered %>%
+      filter(!is.na(.data[[cluster_col]])) %>%
+      dplyr::select(region_id, cluster_id = all_of(cluster_col))
+    
+    if (nrow(df) < 2) return(tibble(from = character(), to = character(), method = character()))
+    
+    df %>%
+      inner_join(df, by = "cluster_id", suffix = c("_a", "_b")) %>%
+      filter(region_id_a < region_id_b) %>%
+      dplyr::select(from = region_id_a, to = region_id_b) %>%
+      mutate(method = cluster_col)
+  }
+  
+  all_edges <- bind_rows(
+    get_method_edges("prox_cluster_id"),
+    get_method_edges("dbscan_cluster_id"),
+    get_method_edges("overlap_cluster_id")
+  )
+  
+  if (nrow(all_edges) == 0) {
+    return(epi_clustered %>% 
+             mutate(canonical_cluster_id  = NA_character_,
+                    in_canonical_cluster  = FALSE,
+                    canonical_n_methods   = NA_integer_))
+  }
+  
+  # ── Step 2: annotate how many methods confirmed each REGION ──────────────
+  # (this column should already exist from hybrid_clustering)
+  # If not, compute it here as a fallback
+  
+  if (!"n_clustering_methods" %in% colnames(epi_clustered)) {
+    epi_clustered <- epi_clustered %>%
+      mutate(n_clustering_methods = 
+               as.integer(!is.na(prox_cluster_id)) +
+               as.integer(!is.na(dbscan_cluster_id)) +
+               as.integer(!is.na(overlap_cluster_id)))
+  }
+  
+  confirmed_regions <- epi_clustered %>%
+    filter(n_clustering_methods >= min_region_methods) %>%
+    pull(region_id)
+  
+  cat("Confirmed regions (≥", min_region_methods, "methods):", 
+      length(confirmed_regions), "\n")
+  
+  # ── Step 3: keep edges where BOTH endpoints are confirmed regions ─────────
+  # No minimum on pair-level method agreement —
+  # validity comes from the region level, not the pair level.
+  # This is what allows DBSCAN's A-C edge to survive even when
+  # prox only knows A-B and B-C separately.
+  
+  edges_filtered <- all_edges %>%
+    filter(from %in% confirmed_regions,
+           to   %in% confirmed_regions) %>%
+    group_by(from, to) %>%
+    summarise(
+      n_methods_for_pair = n_distinct(method),
+      methods_for_pair   = paste(sort(unique(method)), collapse = "+"),
+      .groups = "drop"
+    )
+  
+  cat("Edges after region-level filter:", nrow(edges_filtered), "\n")
+  cat("  Pair supported by 1 method:  ", sum(edges_filtered$n_methods_for_pair == 1), "\n")
+  cat("  Pair supported by 2 methods: ", sum(edges_filtered$n_methods_for_pair == 2), "\n")
+  cat("  Pair supported by 3 methods: ", sum(edges_filtered$n_methods_for_pair == 3), "\n")
+  
+  # ── Step 4: build consensus graph and extract components ─────────────────
+  
+  g <- graph_from_data_frame(
+    edges_filtered %>% dplyr::select(from, to),
+    directed = FALSE,
+    vertices = epi_clustered$region_id
+  )
+  
+  comp <- components(g)
+  
+  # Only components with ≥2 confirmed regions
+  valid_components <- which(comp$csize >= 2)
+  
+  membership_df <- tibble(
+    region_id = names(comp$membership),
+    component = comp$membership
+  ) %>%
+    filter(component %in% valid_components,
+           region_id  %in% confirmed_regions)   # drop unconfirmed stragglers
+  
+  # ── Step 5: canonical ID from genomic span of component ──────────────────
+  
+  canonical_ids <- epi_clustered %>%
+    inner_join(membership_df, by = "region_id") %>%
+    group_by(component) %>%
+    summarise(
+      chr        = chromosome[1],
+      span_start = min(start),
+      span_end   = max(end),
+      n_regions  = n(),
+      # Record which methods contributed edges inside this component
+      .groups    = "drop"
+    ) %>%
+    mutate(
+      canonical_cluster_id = paste0("EVC_", chr, "_", span_start)
+    )
+  
+  cat("\nCanonical clusters formed:", nrow(canonical_ids), "\n")
+  cat("Regions in canonical clusters:", nrow(membership_df), "\n")
+  
+  # ── Step 6: join back ────────────────────────────────────────────────────
+  
+  epi_clustered %>%
+    left_join(membership_df, by = "region_id") %>%
+    left_join(canonical_ids %>% 
+                dplyr::select(component, canonical_cluster_id),
+              by = "component") %>%
+    dplyr::select(-component) %>%
+    mutate(in_canonical_cluster = !is.na(canonical_cluster_id))
+}
+```
+
+
+
+## What changes and why
+
+The logic shift is here:
+```
+OLD:  keep edge A-C  only if  ≥2 methods produced that specific pair
+NEW:  keep edge A-C  if       both A and C are confirmed by ≥2 methods individually
+```
+
+So your DBSCAN-spanning-multiple-prox-clusters case now works:
+```
+prox says:   {A,B}  and  {C,D}        ← two separate prox clusters
+dbscan says: {A,B,C,D}                ← one big dbscan cluster
+
+Region A: prox + dbscan  → n_clustering_methods = 2  ✓ confirmed
+Region B: prox + dbscan  → n_clustering_methods = 2  ✓ confirmed  
+Region C: prox + dbscan  → n_clustering_methods = 2  ✓ confirmed
+Region D: prox + dbscan  → n_clustering_methods = 2  ✓ confirmed
+
+Edge A-B: from prox + from dbscan   → both confirmed → KEEP
+Edge C-D: from prox + from dbscan   → both confirmed → KEEP
+Edge A-C: from dbscan only          → both confirmed → KEEP ✓  ← this is new
+Edge A-D: from dbscan only          → both confirmed → KEEP ✓  ← this is new
+
+Component: {A, B, C, D} → EVC_chrX_startA
+
+
+# ============================================================
+# ADDITION 1: SAMPLE CO-OCCURRENCE SCORE
 #
+# For each cluster: among regions in this cluster, what
+# fraction of carrier-samples appear in ≥2 regions?
+# A true hotspot = same patient, multiple nearby epivariants.
+#
+# Input:  epi_clustered  — output of hybrid_clustering()
+#         cluster_col    — which cluster id column to use
+#         sample_col     — column holding comma-separated sample ids
+# ============================================================
+
+add_sample_cooccurrence <- function(epi_clustered,
+                                     cluster_col  = "prox_cluster_id",
+                                     sample_col   = "samples_final") {
+
+  # Only work on rows that are in a cluster
+  clustered_rows <- epi_clustered %>%
+    filter(!is.na(.data[[cluster_col]]))
+
+  if (nrow(clustered_rows) == 0) {
+    message("No clustered rows found for column: ", cluster_col)
+    return(epi_clustered %>%
+             mutate(cooccurrence_score = NA_real_,
+                    n_recurrent_samples = NA_integer_,
+                    recurrent_samples = NA_character_))
+  }
+
+  # Expand: one row per region × sample
+  expanded <- clustered_rows %>%
+    dplyr::select(region_id, cluster_id = all_of(cluster_col),
+                  samples_raw = all_of(sample_col)) %>%
+    # Handle "R[s1,s2] MR[s3]" format from shared epivariants
+    mutate(samples_raw = str_replace_all(samples_raw, "R\\[|MR\\[|\\]", "")) %>%
+    mutate(sample = str_split(samples_raw, ",")) %>%
+    unnest(sample) %>%
+    mutate(sample = str_trim(sample)) %>%
+    filter(sample != "", !is.na(sample))
+
+  # Per cluster: count how many regions each sample appears in
+  sample_region_counts <- expanded %>%
+    group_by(cluster_id, sample) %>%
+    summarise(n_regions_in_cluster = n_distinct(region_id), .groups = "drop")
+
+  # Recurrent = sample appears in ≥2 regions within the cluster
+  cluster_cooccurrence <- sample_region_counts %>%
+    group_by(cluster_id) %>%
+    summarise(
+      total_unique_samples     = n_distinct(sample),
+      n_recurrent_samples      = sum(n_regions_in_cluster >= 2),
+      recurrent_samples        = paste(sample[n_regions_in_cluster >= 2], collapse = ","),
+      cooccurrence_score       = round(n_recurrent_samples / total_unique_samples, 3),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      recurrent_samples = ifelse(recurrent_samples == "", NA_character_, recurrent_samples)
+    )
+
+  # Join back
+  epi_clustered %>%
+    left_join(cluster_cooccurrence,
+              by = setNames("cluster_id", cluster_col))
+}
+
+
+# ============================================================
+# ADDITION 2: DIRECTIONALITY CONCORDANCE WITHIN CLUSTERS
+#
+# A strong hotspot = all regions shift the same way.
+# Uses consensus_direction column from master_clean.
+# ============================================================
+
+add_directionality_concordance <- function(epi_clustered,
+                                            cluster_col     = "prox_cluster_id",
+                                            direction_col   = "consensus_direction") {
+
+  clustered_rows <- epi_clustered %>%
+    filter(!is.na(.data[[cluster_col]]))
+
+  if (nrow(clustered_rows) == 0) {
+    return(epi_clustered %>%
+             mutate(direction_concordance = NA_character_,
+                    pct_hyper_in_cluster  = NA_real_,
+                    pct_hypo_in_cluster   = NA_real_))
+  }
+
+  dir_summary <- clustered_rows %>%
+    dplyr::select(cluster_id = all_of(cluster_col),
+                  direction  = all_of(direction_col)) %>%
+    # Normalise: extract "hyper" or "hypo" even from "R:hyper | MR:hyper" format
+    mutate(direction_simple = case_when(
+      str_detect(tolower(direction), "hyper") &
+        !str_detect(tolower(direction), "hypo")  ~ "hyper",
+      str_detect(tolower(direction), "hypo")  &
+        !str_detect(tolower(direction), "hyper") ~ "hypo",
+      TRUE ~ "mixed"
+    )) %>%
+    group_by(cluster_id) %>%
+    summarise(
+      n_regions_in_cluster  = n(),
+      n_hyper               = sum(direction_simple == "hyper"),
+      n_hypo                = sum(direction_simple == "hypo"),
+      n_mixed               = sum(direction_simple == "mixed"),
+      pct_hyper_in_cluster  = round(n_hyper / n_regions_in_cluster * 100, 1),
+      pct_hypo_in_cluster   = round(n_hypo  / n_regions_in_cluster * 100, 1),
+      direction_concordance = case_when(
+        n_hyper == n_regions_in_cluster ~ "all_hyper",
+        n_hypo  == n_regions_in_cluster ~ "all_hypo",
+        n_hyper > n_hypo               ~ "predominantly_hyper",
+        n_hypo  > n_hyper              ~ "predominantly_hypo",
+        TRUE                           ~ "discordant"
+      ),
+      .groups = "drop"
+    )
+
+  epi_clustered %>%
+    left_join(dir_summary,
+              by = setNames("cluster_id", cluster_col))
+}
+
+
+# ============================================================
+# ADDITION 3: MEAN |DELTA BETA| PER CLUSTER
+#
+# Effect size for the hotspot as a whole.
+# Requires beta_context (from build_beta_context()).
+# ============================================================
+
+add_cluster_effect_size <- function(epi_clustered,
+                                     beta_context,
+                                     cluster_col = "prox_cluster_id") {
+
+  clustered_rows <- epi_clustered %>%
+    filter(!is.na(.data[[cluster_col]])) %>%
+    dplyr::select(region_id, cluster_id = all_of(cluster_col))
+
+  if (nrow(clustered_rows) == 0) {
+    return(epi_clustered %>%
+             mutate(cluster_mean_abs_delta_detail  = NA_real_,
+                    cluster_mean_abs_delta_general = NA_real_,
+                    cluster_median_nSD_detail       = NA_real_))
+  }
+
+  effect_per_cluster <- beta_context %>%
+    inner_join(clustered_rows, by = "region_id") %>%
+    group_by(cluster_id) %>%
+    summarise(
+      cluster_n_cpg_sample_pairs    = n(),
+      cluster_mean_abs_delta_detail  = round(mean(abs_delta_beta_detail,  na.rm = TRUE), 3),
+      cluster_mean_abs_delta_general = round(mean(abs_delta_beta_general, na.rm = TRUE), 3),
+      cluster_median_nSD_detail      = round(median(n_sd_from_bg_detail,  na.rm = TRUE), 2),
+      cluster_pct_cpgs_02_detail     = round(mean(abs_delta_beta_detail >= 0.2, na.rm = TRUE) * 100, 1),
+      .groups = "drop"
+    )
+
+  epi_clustered %>%
+    left_join(effect_per_cluster,
+              by = setNames("cluster_id", cluster_col))
+}
+
+
+# ============================================================
+# ADDITION 4: HOTSPOT RECURRENCE RATE
+#
+# For each cluster: what % of ALL R (or MR) patients have
+# at least one epivariant in this cluster?
+# This is the most clinically meaningful metric.
+# ============================================================
+
+add_hotspot_recurrence_rate <- function(epi_clustered,
+                                         sample_info,      # data.frame: sample_id, response
+                                         cluster_col  = "prox_cluster_id",
+                                         sample_col   = "samples_final") {
+
+  # Total patients per response group
+  n_R  <- sum(sample_info$response == "R",  na.rm = TRUE)
+  n_MR <- sum(sample_info$response == "MR", na.rm = TRUE)
+  n_NR <- sum(sample_info$response == "NR", na.rm = TRUE)
+
+  clustered_rows <- epi_clustered %>%
+    filter(!is.na(.data[[cluster_col]]))
+
+  if (nrow(clustered_rows) == 0) {
+    return(epi_clustered %>%
+             mutate(recurrence_pct_R  = NA_real_,
+                    recurrence_pct_MR = NA_real_))
+  }
+
+  # Expand to one row per cluster × sample
+  expanded <- clustered_rows %>%
+    dplyr::select(cluster_id  = all_of(cluster_col),
+                  epivariant_class,
+                  samples_raw = all_of(sample_col)) %>%
+    mutate(samples_raw = str_replace_all(samples_raw, "R\\[|MR\\[|\\]", "")) %>%
+    mutate(sample = str_split(samples_raw, ",")) %>%
+    unnest(sample) %>%
+    mutate(sample = str_trim(sample)) %>%
+    filter(sample != "", !is.na(sample)) %>%
+    left_join(sample_info %>% dplyr::select(sample_id, response),
+              by = c("sample" = "sample_id"))
+
+  recurrence <- expanded %>%
+    group_by(cluster_id) %>%
+    summarise(
+      n_patients_R_in_cluster  = n_distinct(sample[response == "R"],  na.rm = TRUE),
+      n_patients_MR_in_cluster = n_distinct(sample[response == "MR"], na.rm = TRUE),
+      recurrence_pct_R         = round(n_patients_R_in_cluster  / n_R  * 100, 1),
+      recurrence_pct_MR        = round(n_patients_MR_in_cluster / n_MR * 100, 1),
+      .groups = "drop"
+    )
+
+  epi_clustered %>%
+    left_join(recurrence,
+              by = setNames("cluster_id", cluster_col))
+}
+
+
+# ============================================================
+# WRAPPER: RUN ALL ADDITIONS IN ONE CALL
+# ============================================================
+
+enrich_clusters <- function(epi_clustered,
+                              beta_context,
+                              sample_info,
+                              cluster_col = "prox_cluster_id",
+                              sample_col  = "samples_final") {
+
+  cat("Adding sample co-occurrence scores...\n")
+  epi_clustered <- add_sample_cooccurrence(epi_clustered, cluster_col, sample_col)
+
+  cat("Adding directionality concordance...\n")
+  epi_clustered <- add_directionality_concordance(epi_clustered, cluster_col)
+
+  cat("Adding cluster-level effect sizes...\n")
+  epi_clustered <- add_cluster_effect_size(epi_clustered, beta_context, cluster_col)
+
+  cat("Adding hotspot recurrence rates...\n")
+  epi_clustered <- add_hotspot_recurrence_rate(epi_clustered, sample_info,
+                                                cluster_col, sample_col)
+
+  cat("\n=== ENRICHED CLUSTER SUMMARY ===\n")
+  # summary_tbl <- epi_clustered %>%
+  #   filter(!is.na(.data[[cluster_col]])) %>%
+  #   group_by(.data[[cluster_col]]) %>%
+  #   slice(1) %>%          # one row per cluster for the summary
+  #   ungroup() %>%
+  #   dplyr::select(
+  #     cluster_id              = all_of(cluster_col),
+  #     direction_concordance,
+  #     cooccurrence_score,
+  #     n_recurrent_samples,
+  #     recurrence_pct_R,
+  #     recurrence_pct_MR,
+  #     cluster_mean_abs_delta_detail,
+  #     cluster_median_nSD_detail
+  #   )
+
+  # Replace just the summary block at the bottom of enrich_clusters()
+# (everything above it stays the same)
+
+  cat("\n=== ENRICHED CLUSTER SUMMARY (", cluster_col, ") ===\n", sep = "")
+  
+summary_tbl <- as.data.frame(epi_clustered) %>%
+    filter(!is.na(.data[[cluster_col]])) %>%
+    dplyr::select(
+      cluster_id                    = all_of(cluster_col),
+      direction_concordance,
+      cooccurrence_score,
+      n_recurrent_samples,
+      recurrence_pct_R,
+      recurrence_pct_MR,
+      cluster_mean_abs_delta_detail,
+      cluster_median_nSD_detail
+    ) %>%
+    distinct()   # ← replaces group_by + slice(1) + ungroup entirely
+
+  cat("Total canonical clusters:         ", n_distinct(summary_tbl$cluster_id), "\n")
+  cat("Directionally concordant:         ",
+      sum(summary_tbl$direction_concordance %in% c("all_hyper","all_hypo"), na.rm=TRUE), "\n")
+  cat("With recurrent samples (score>0): ",
+      sum(summary_tbl$cooccurrence_score > 0, na.rm=TRUE), "\n")
+  cat("Mean recurrence R:                ",
+      round(mean(summary_tbl$recurrence_pct_R,  na.rm=TRUE), 1), "%\n")
+  cat("Mean recurrence MR:               ",
+      round(mean(summary_tbl$recurrence_pct_MR, na.rm=TRUE), 1), "%\n")
+
+  print(summary_tbl)
+  return(epi_clustered)
+
+
+  # cat("Total clusters:", n_distinct(summary_tbl$cluster_id), "\n")
+  # cat("Direction concordant (all_hyper or all_hypo):",
+  #     sum(summary_tbl$direction_concordance %in% c("all_hyper", "all_hypo"), na.rm = TRUE), "\n")
+  # cat("Clusters with recurrent samples (cooccurrence_score > 0):",
+  #     sum(summary_tbl$cooccurrence_score > 0, na.rm = TRUE), "\n")
+  # cat("Mean recurrence in R:", round(mean(summary_tbl$recurrence_pct_R, na.rm = TRUE), 1), "%\n")
+  # cat("Mean recurrence in MR:", round(mean(summary_tbl$recurrence_pct_MR, na.rm = TRUE), 1), "%\n")
+
+  # print(summary_tbl)
+
+  # return(epi_clustered)
+}
+
+
