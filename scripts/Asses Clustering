@@ -1,3 +1,9 @@
+# ASSESING CLUSTERING RESULTS IN CONTEXT
+#! MAYBE should add a hotspot context pdf or like table so that i can see simply the amount 
+
+#
+
+# 1 
 hotspot_in_context <-function(epi_clean_clustered,in_overlap_cluster) {
 feature_bar1 <- epi_clean_clustered %>%
     dplyr::count(in_overlap_cluster, cpgi_context) %>%
@@ -24,11 +30,10 @@ feature_bar2 <- epi_clean_clustered %>%
          x = NULL, y = "%", fill = "Feature") +
     theme_minimal(base_size = 11)
 
- print(feature_bar1 / feature_bar2 + plot_layout(guides = "collect") & theme(legend.position = "bottom"))
+ # print(feature_bar1 / feature_bar2 + plot_layout(guides = "collect") & theme(legend.position = "bottom"))
  print(feature_bar1)
  print(feature_bar2)
 }
-
 
 hotspot_in_context(epi_1_hotspots)
 hotspot_in_context(clusters_10pct$epi_df_clustered )
@@ -38,6 +43,489 @@ hotspot_in_context(strong_hotspots, in_canonical_cluster)
 hotspot_in_context(strong_hotspots1, in_canonical_cluster)
 hotspot_in_context(strong_hotspots2, in_canonical_cluster)
 
+# 2
+# ============================================================
+# plot_cluster_landscape()
+#
+# Requires the pre-built objects from your preprocessing step:
+#   beta_long_base  <- build_beta_long_base()$beta_long_base
+#   lookup_mega     <- build_epivariant_lookup_mega()
+#   cpg_positions   <- build_beta_long_base()$cpg_positions
+#
+# POINT COLOUR SYSTEM (8 classes, 3 rendering layers):
+#   Layer 1 – background (tiny, transparent):
+#     NR             -> mid-grey
+#     R_background   -> very light pink  (R, no epivariant anywhere)
+#     MR_background  -> very light green (MR, no epivariant anywhere)
+#
+#   Layer 2 – other epivariants (medium, faint white outline):
+#     R_other_epi    -> medium salmon-red (R, epivariant in DIFFERENT region)
+#     MR_other_epi   -> medium green      (MR, epivariant in DIFFERENT region)
+#
+#   Layer 3 – cluster epivariants (large, black outline):
+#     R_cluster      -> dark red   (R sample, epivariant IN THIS cluster)
+#     MR_cluster     -> dark green (MR sample, epivariant IN THIS cluster)
+#     Shared_cluster -> dark blue  (shared region IN THIS cluster)
+#
+# RECTANGLES (identity fill, outside aes -- do not pollute fill scale):
+#     R_only          -> faint red fill, red border
+#     MR_only         -> faint green fill, green border
+#     Shared_R_and_MR -> faint blue fill, blue border
+# ============================================================
+
+plot_cluster_landscape <- function(
+    epi_clustered,      # output of hybrid_clustering(master_annotated)
+    master_annotated,   # annotated master clean table
+    beta_long_base,     # build_beta_long_base()$beta_long_base  -- reuse, don't rebuild
+    lookup_mega,        # build_epivariant_lookup_mega()          -- reuse, don't rebuild
+    cpg_positions,      # build_beta_long_base()$cpg_positions    -- reuse, don't rebuild
+    n_clusters    = 4,
+    window_cpgs   = 200,
+    cluster_type  = c("any", "proximity", "overlap", "dbscan"),
+    min_epi_pts   = 1,
+    seed          = 42
+) {
+  set.seed(seed)
+  cluster_type <- match.arg(cluster_type)
+
+  library(tidyverse)
+  library(patchwork)
+
+  # ── Which column holds cluster IDs? ───────────────────────
+  cluster_col <- switch(cluster_type,
+    any       = "canonical_cluster_id",
+    proximity = "prox_cluster_id",
+    overlap   = "overlap_cluster_id",
+    dbscan    = "dbscan_cluster_id"
+  )
+
+  # ── Select candidate clusters ──────────────────────────────
+  candidates <- epi_clustered %>%
+    filter(!is.na(.data[[cluster_col]])) %>%
+    { if (cluster_type == "any") filter(., n_clustering_methods >= 2) else . }
+
+  if (nrow(candidates) == 0)
+    stop("No clusters found for cluster_type = '", cluster_type, "'.")
+    
+ unique_clusters <- candidates %>%
+    group_by(.data[[cluster_col]]) %>%
+    dplyr::summarise(
+      chromosome    = dplyr::first(chromosome),
+      cluster_start = min(as.numeric(start)),
+      cluster_end   = max(as.numeric(end)),
+      n_regions     = dplyr::n(),
+      n_methods_max = max(n_clustering_methods, na.rm = TRUE),
+      gene_label    = {
+        gs <- na.omit(unique(gene_symbol))
+        if (length(gs)) paste(head(gs, 3), collapse = "/") else "\u2014"
+      },
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(desc(n_methods_max), desc(n_regions)) %>%
+    head(n_clusters)
+
+
+  # ── Colour palette ─────────────────────────────────────────
+  pt_colors <- c(
+    "NR"             = "#9619E4", # "#9E9E9E",
+    "R_background"   = "#FFCDD2",
+    "R_other_epi"    = "#EF9A9A",
+    "R_cluster"      = "#B71C1C",
+    "MR_background"  = "#C8E6C9",
+    "MR_other_epi"   = "#81C784",
+    "MR_cluster"     = "#1B5E20",
+    "Shared_cluster" = "#0D47A1"
+  )
+
+  rect_fills <- c(
+    R_only          = "#FFEBEE",
+    MR_only         = "#E8F5E9",
+    Shared_R_and_MR = "#E3F2FD"
+  )
+  rect_bords <- c(
+    R_only          = "#C62828",
+    MR_only         = "#2E7D32",
+    Shared_R_and_MR = "#1565C0"
+  )
+
+  legend_labels <- c(
+    NR             = "NR  (reference)",
+    R_background   = "R  \u2013 not epivariant",
+    R_other_epi    = "R  \u2013 epivariant, other region",
+    R_cluster      = "R  \u2013 epivariant in this cluster",
+    MR_background  = "MR \u2013 not epivariant",
+    MR_other_epi   = "MR \u2013 epivariant, other region",
+    MR_cluster     = "MR \u2013 epivariant in this cluster",
+    Shared_cluster = "Shared R+MR \u2013 epivariant in this cluster"
+  )
+
+  # ── One plot per cluster ───────────────────────────────────
+  plots <- map(seq_len(nrow(unique_clusters)), function(i) {
+
+    ci  <- unique_clusters[i, ]
+    chr <- ci$chromosome
+    cid <- ci[[cluster_col]]
+
+    cluster_regions <- epi_clustered %>%
+      filter(chromosome == chr,
+             !is.na(.data[[cluster_col]]),
+             .data[[cluster_col]] == cid)
+
+    c_start <- min(as.numeric(cluster_regions$start))
+    c_end   <- max(as.numeric(cluster_regions$end))
+
+    # ── Window CpGs from pre-built cpg_positions ──────────────
+    # cpg_positions uses 'seqnames' (GRanges-derived) and 'start'
+    chr_cpgs <- cpg_positions %>%
+      filter(as.character(seqnames) == chr) %>%
+      arrange(start) %>%
+      mutate(local_idx = row_number())
+
+    anchor_idx <- chr_cpgs %>%
+      mutate(d = abs(start - c_start)) %>%
+      slice_min(d, n = 1, with_ties = FALSE) %>%
+      pull(local_idx)
+
+    if (!length(anchor_idx) || is.na(anchor_idx)) {
+      message("Skipping cluster ", cid, ": no anchor CpG found.")
+      return(NULL)
+    }
+
+    half    <- floor(window_cpgs / 2)
+    idx_min <- max(1, anchor_idx - half)
+    idx_max <- min(nrow(chr_cpgs), anchor_idx + ceiling(window_cpgs * 1.5))
+
+    win_cpgs <- chr_cpgs %>%
+      filter(local_idx >= idx_min, local_idx <= idx_max) %>%
+      mutate(win_idx = row_number())
+
+    valid_cpgs <- win_cpgs$cpg_id
+
+    if (length(valid_cpgs) < 5) {
+      message("Skipping cluster ", cid, ": too few CpGs in window.")
+      return(NULL)
+    }
+
+    pos_min <- min(win_cpgs$start)
+    pos_max <- max(win_cpgs$start)
+
+    # ── Slice beta_long_base to window CpGs ───────────────────
+    # No rebuild needed: just filter the existing long table
+    beta_win <- beta_long_base %>%
+      filter(cpg_id %in% valid_cpgs) %>%
+      left_join(win_cpgs %>% dplyr::select(cpg_id, win_idx), by = "cpg_id")
+
+    if (nrow(beta_win) == 0) {
+      message("Skipping cluster ", cid, ": no beta values in window.")
+      return(NULL)
+    }
+
+    # ── Epivariant flags from pre-built lookup_mega ────────────
+    # (a) Epivariants belonging to THIS cluster's regions
+    cluster_epi <- lookup_mega %>%
+      filter(region_id %in% cluster_regions$region_id,
+             cpg_id    %in% valid_cpgs) %>%
+      dplyr::select(cpg_id, sample_id, region_id) %>%
+      distinct() %>%
+      left_join(
+        master_annotated %>% dplyr::select(region_id, epivariant_class),
+        by = "region_id"
+      ) %>%
+      mutate(in_cluster = TRUE)
+
+    # (b) Epivariants in OTHER regions (same window, different region)
+    other_epi <- lookup_mega %>%
+      filter(!region_id %in% cluster_regions$region_id,
+             cpg_id     %in% valid_cpgs) %>%
+      dplyr::select(cpg_id, sample_id) %>%
+      distinct() %>%
+      mutate(is_other = TRUE)
+
+    if (nrow(cluster_epi) < min_epi_pts) {
+      message("Skipping cluster ", cid, ": fewer than ", min_epi_pts,
+              " epivariant points in window.")
+      return(NULL)
+    }
+
+    # ── Classify every point ───────────────────────────────────
+    beta_classified <- beta_win %>%
+      left_join(
+        cluster_epi %>% dplyr::select(cpg_id, sample_id, in_cluster, epivariant_class),
+        by = c("cpg_id", "sample_id")
+      ) %>%
+      left_join(
+        other_epi,
+        by = c("cpg_id", "sample_id")
+      ) %>%
+      mutate(
+        in_cluster = replace_na(in_cluster, FALSE),
+        is_other   = replace_na(is_other,   FALSE),
+        point_class = case_when(
+          response == "NR"                                         ~ "NR",
+          in_cluster & epivariant_class == "Shared_R_and_MR"      ~ "Shared_cluster",
+          response == "R"  & in_cluster                           ~ "R_cluster",
+          response == "MR" & in_cluster                           ~ "MR_cluster",
+          response == "R"  & is_other                             ~ "R_other_epi",
+          response == "MR" & is_other                             ~ "MR_other_epi",
+          response == "R"                                          ~ "R_background",
+          response == "MR"                                         ~ "MR_background",
+          TRUE ~ "NR"
+        )
+      )
+
+    # ── Rectangle coordinates for each region in the cluster ──
+    region_rects <- cluster_regions %>%
+      rowwise() %>%
+      mutate(
+        xmin = {
+          h <- win_cpgs %>%
+            mutate(d = abs(start - as.numeric(start))) %>%
+            slice_min(d, n = 1, with_ties = FALSE) %>%
+            pull(win_idx)
+          if (length(h) == 0) NA_real_ else h - 0.5
+        },
+        xmax = {
+          h <- win_cpgs %>%
+            mutate(d = abs(start - as.numeric(end))) %>%
+            slice_min(d, n = 1, with_ties = FALSE) %>%
+            pull(win_idx)
+          if (length(h) == 0) NA_real_ else h + 0.5
+        },
+        rfill = rect_fills[epivariant_class],
+        rbord = rect_bords[epivariant_class]
+      ) %>%
+      ungroup() %>%
+      filter(!is.na(xmin), !is.na(xmax))
+
+    # Fix ambiguous column name in rowwise mutate above
+    region_rects <- cluster_regions %>%
+      mutate(
+        reg_start = as.numeric(start),
+        reg_end   = as.numeric(end)
+      ) %>%
+      rowwise() %>%
+      mutate(
+        xmin = {
+          h <- win_cpgs %>%
+            mutate(d = abs(start - reg_start)) %>%
+            slice_min(d, n = 1, with_ties = FALSE) %>%
+            pull(win_idx)
+          if (length(h) == 0) NA_real_ else h - 0.5
+        },
+        xmax = {
+          h <- win_cpgs %>%
+            mutate(d = abs(start - reg_end)) %>%
+            slice_min(d, n = 1, with_ties = FALSE) %>%
+            pull(win_idx)
+          if (length(h) == 0) NA_real_ else h + 0.5
+        },
+        rfill = rect_fills[epivariant_class],
+        rbord = rect_bords[epivariant_class]
+      ) %>%
+      ungroup() %>%
+      filter(!is.na(xmin), !is.na(xmax))
+
+    # ── Split into rendering layers ────────────────────────────
+    bg_pts  <- beta_classified %>%
+      filter(point_class %in% c("NR", "R_background", "MR_background"))
+    mid_pts <- beta_classified %>%
+      filter(point_class %in% c("R_other_epi", "MR_other_epi"))
+    top_pts <- beta_classified %>%
+      filter(point_class %in% c("R_cluster", "MR_cluster", "Shared_cluster"))
+
+    n_R_epi  <- sum(top_pts$point_class == "R_cluster")
+    n_MR_epi <- sum(top_pts$point_class == "MR_cluster")
+    n_sh_epi <- sum(top_pts$point_class == "Shared_cluster")
+
+    beta_classified <- beta_classified %>%
+    mutate(point_class = factor(point_class, levels = names(legend_labels)))
+
+    present_levels <- intersect(
+      names(legend_labels),
+      unique(as.character(beta_classified$point_class))
+    )
+
+    n_keys <- length(present_levels)
+
+    # ── ggplot ─────────────────────────────────────────────────
+    p <- ggplot() +
+
+      # ① Region rectangles  (identity colour: outside aes)
+      geom_rect(
+        data      = region_rects,
+        aes(xmin  = xmin, xmax = xmax, ymin = 0, ymax = 1),
+        fill      = region_rects$rfill,
+        color     = region_rects$rbord,
+        linewidth = 0.8,
+        alpha     = 0.45
+      ) +
+
+      # ② Background layer: tiny, transparent
+      geom_point(
+        data  = bg_pts,
+        aes(x = win_idx, y = beta, fill = point_class),
+        shape = 21, color = "white",
+        size  = 1.2, alpha = 0.5, stroke = 0.2
+      ) +
+
+      # ③ Other-epivariant layer: medium, faint white halo
+      { if (nrow(mid_pts) > 0)
+          geom_point(
+            data  = mid_pts,
+            aes(x = win_idx, y = beta, fill = point_class),
+            shape = 21, color = "white",
+            size  = 1.9, alpha = 0.70, stroke = 0.3
+          )
+      } +
+
+      # ④ Cluster-epivariant layer: large, bold black outline
+      { if (nrow(top_pts) > 0)
+          geom_point(
+            data  = top_pts,
+            aes(x = win_idx, y = beta, fill = point_class),
+            shape = 21, color = "black",
+            size  = 4.0, alpha = 1.0, stroke = 0.9
+          )
+      } +
+
+      scale_fill_manual(
+        values = pt_colors,
+        name   = NULL,
+        labels = legend_labels,
+        breaks = names(legend_labels),
+        drop   = FALSE
+      ) +
+      scale_y_continuous(
+        name   = "\u03b2-value",
+        limits = c(0, 1),
+        breaks = c(0, 0.25, 0.5, 0.75, 1),
+        expand = expansion(mult = 0.01)
+      ) +
+      scale_x_continuous(
+        name = paste0(
+          "Chr ", chr, "  \u2192  ",
+          format(pos_min, big.mark = ","), "\u2013",
+          format(pos_max, big.mark = ","),
+          "  (", nrow(win_cpgs), " CpGs)"
+        ),
+        breaks = NULL,
+        expand = expansion(mult = 0.01)
+      ) +
+
+      labs(
+        title = paste0(
+          "Cluster  ", cid,
+          "   \u00b7   Chr ", chr, " : ",
+          format(c_start, big.mark = ","), "\u2013",
+          format(c_end,   big.mark = ","),
+          "   \u00b7   ", nrow(cluster_regions), " region(s)",
+          "   \u00b7   Gene: ", ci$gene_label
+        ),
+        subtitle = paste0(
+          "R epivariants in cluster: ", n_R_epi, " pts   \u00b7   ",
+          "MR epivariants in cluster: ", n_MR_epi, " pts   \u00b7   ",
+          "Shared: ", n_sh_epi, " pts"
+        )
+      ) +
+
+      guides(
+        fill = guide_legend(
+          override.aes = list(
+            size   = c(2.0, 2.0, 2.5, 4.2, 2.0, 2.5, 4.2, 4.2)[1:n_keys],
+            color  = c(NA, NA, "white", "black", NA, "white", "black", "black")[1:n_keys],
+            stroke = c(0, 0, 0.3, 0.9, 0, 0.3, 0.9, 0.9)[1:n_keys],
+            alpha  = c(1, 0.30, 0.70, 1.0, 0.30, 0.70, 1.0, 1.0)[1:n_keys]
+          ),
+          ncol = 1
+        )
+      ) +
+      theme_minimal(base_size = 11) +
+      theme(
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor   = element_blank(),
+        axis.ticks.x       = element_blank(),
+        legend.position    = "right",
+        legend.text        = element_text(size = 8.5),
+        legend.key.size    = unit(0.55, "cm"),
+        plot.title         = element_text(face = "bold", size = 11.5),
+        plot.subtitle      = element_text(size = 8.5, colour = "grey45"),
+        plot.margin        = margin(14, 14, 14, 14)
+      )
+
+    return(p)
+
+  }) %>%
+    purrr::compact()
+
+  if (!length(plots)) stop("No valid cluster plots produced.")
+
+  # combined <- wrap_plots(plots, ncol = 1)
+
+  # fname <- paste0("cluster_landscape_", cluster_type, ".png")
+  # ggsave(fname, combined,
+  #        width     = 14,
+  #        height    = 6.5 * length(plots),
+  #        dpi       = 300,
+  #        limitsize = FALSE)
+
+  # cat("\nSaved:", fname,
+  #     "\nPlots:", length(plots), "| cluster_type:", cluster_type, "\n")
+
+  # invisible(plots)
+
+  out_files <- map2(plots, seq_along(plots), function(p, i) {
+  
+  fname <- paste0("cluster_", cluster_type, "_", i, ".png")
+  
+  ggsave(
+    filename = fname,
+    plot     = p,
+    width    = 14,
+    height   = 6.5,
+    dpi      = 300
+  )
+  
+  fname
+})
+
+cat("\nSaved", length(out_files), "individual cluster plots.\n")
+}
+
+
+
+
+# ============================================================
+# USAGE  (all objects already live in your R environment)
+# ============================================================
+#
+ plot_cluster_landscape(
+  epi_clustered    = strong_hotspots,    # hybrid_clustering() output
+  master_annotated = master_annotated,
+  beta_long_base   = beta_long_base,    # already built -- passed in, not rebuilt
+  lookup_mega      = lookup_mega,       # already built -- passed in, not rebuilt
+  cpg_positions    = cpg_positions,     # already built -- passed in, not rebuilt
+  n_clusters       = 5,
+  window_cpgs      = 200,
+  cluster_type     = "any",             # "any" | "proximity" | "overlap" | "dbscan"
+   min_epi_pts   = 5
+)
+
+# USAGE  (all objects already live in your R environment)
+# ============================================================
+#
+
+
+plot_cluster_landscape(
+  epi_clustered    = epi_1_hotspots,    # hybrid_clustering() output
+  master_annotated = master_annotated,
+  beta_long_base   = beta_long_base,    # already built -- passed in, not rebuilt
+  lookup_mega      = lookup_mega,       # already built -- passed in, not rebuilt
+  cpg_positions    = cpg_positions,     # already built -- passed in, not rebuilt
+  n_clusters       = 5,
+  window_cpgs      = 200,
+  min_epi_pts   = 1,
+  cluster_type     = "dbscan"             # "any" | "proximity" | "overlap" | "dbscan"
+)
 
 
 
