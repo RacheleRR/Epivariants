@@ -463,3 +463,162 @@ epi_truly_clustered <- epi_clean_clustered %>%
     unified_summary = unified_summary,
     cpg_positions   = cpg_positions
   )
+
+
+
+
+#FILTERING 
+
+
+  # ============================================================
+  # EPIVARIANT ANALYSIS FRAMEWORK
+  # ============================================================
+  # Architecture:
+  #   - One master object per enrichment level (adds columns)
+  #   - One filter function per dimension (removes rows)
+  #   - One query function to get any combination
+  #   - Separate plot packages that accept any epivariant table
+  # ============================================================
+
+
+  # ============================================================
+  # LAYER 0: BASE OBJECTS (already computed by your pipeline)
+  # ============================================================
+  # master_clean        — raw filtered epivariants (no annotation)
+  # master_annotated    — + genomic annotation columns
+  # beta_context        — per cpg×sample effect sizes
+  # hotspot_v3          — window counts + ks results
+
+
+  # ============================================================
+  # LAYER 1: BUILD ENRICHED MASTER TABLES
+  # (adds columns, keeps ALL rows)
+  # ============================================================
+
+  # 1. Annotation summary per region (one row per region, not per cpg)
+  annotation_summary <- master_annotated %>%
+    dplyr::select(region_id, annotation_broad, annotation_detail,
+                  distanceToTSS, gene_id, ENSEMBL, gene_symbol, gene_name,
+                  cpgi_context, cre_types, n_cres, in_cre)
+
+  # 2. Beta context summary per region (one row per region)
+  beta_context_summary <- beta_context %>%
+    group_by(region_id) %>%
+    summarise(
+      n_cpg_sample_pairs     = n(),
+      mean_delta_detail      = round(mean(delta_beta_detail,      na.rm=TRUE), 3),
+      mean_abs_delta_detail  = round(mean(abs_delta_beta_detail,  na.rm=TRUE), 3),
+      median_nSD_detail      = round(median(n_sd_from_bg_detail,  na.rm=TRUE), 2),
+      pct_cpgs_02_detail     = round(mean(abs_delta_beta_detail  >= 0.2, na.rm=TRUE)*100, 1),
+      max_abs_delta_detail   = round(max(abs_delta_beta_detail,   na.rm=TRUE), 3),
+      mean_delta_general     = round(mean(delta_beta_general,     na.rm=TRUE), 3),
+      mean_abs_delta_general = round(mean(abs_delta_beta_general, na.rm=TRUE), 3),
+      median_nSD_general     = round(median(n_sd_from_bg_general, na.rm=TRUE), 2),
+      pct_cpgs_02_general    = round(mean(abs_delta_beta_general >= 0.2, na.rm=TRUE)*100, 1),
+      max_abs_delta_general  = round(max(abs_delta_beta_general,  na.rm=TRUE), 3),
+      mean_n_sd_from_bg_detail     = round(mean(n_sd_from_bg_detail,     na.rm=TRUE), 2),
+      mean_n_sd_from_bg_general    = round(mean(n_sd_from_bg_general,    na.rm=TRUE), 2),
+      pct_cpgs_nSD3_detail = round(mean(abs(n_sd_from_bg_detail) >= 3, na.rm = TRUE) * 100, 1),
+      .groups = "drop"
+    )
+
+  # 3. Beta context per region × sample
+  beta_context_per_sample <- beta_context %>%
+    group_by(region_id, sample_id, epivariant_class,
+            consensus_direction, tier, gene_symbol, annotation_broad,
+            cpgi_context, in_cre) %>%
+    summarise(
+      n_cpgs_measured        = n(),
+      mean_delta_detail      = round(mean(delta_beta_detail,     na.rm=TRUE), 3),
+      mean_abs_delta_detail  = round(mean(abs_delta_beta_detail, na.rm=TRUE), 3),
+      median_nSD_detail      = round(median(n_sd_from_bg_detail, na.rm=TRUE), 2),
+      max_abs_delta_detail   = round(max(abs_delta_beta_detail,  na.rm=TRUE), 3),
+      pct_cpgs_02_detail     = round(mean(abs_delta_beta_detail >= 0.2, na.rm=TRUE)*100, 1),
+      mean_delta_general     = round(mean(delta_beta_general,    na.rm=TRUE), 3),
+      mean_abs_delta_general = round(mean(abs_delta_beta_general,na.rm=TRUE), 3),
+      median_nSD_general     = round(median(n_sd_from_bg_general,na.rm=TRUE), 2),
+      pct_cpgs_02_general    = round(mean(abs_delta_beta_general >= 0.2, na.rm=TRUE)*100, 1),
+      .groups = "drop"
+    ) %>%
+    left_join(sample_info %>% dplyr::select(sample_id, response), by = "sample_id")
+
+
+  # ============================================================
+  # LAYER 2: MASTER ENRICHED TABLE
+  # (all info joined — this is the single source of truth)
+  # ============================================================
+
+  master_full <- master_clean %>%
+    # Add annotation
+    left_join(annotation_summary, by = "region_id") %>%
+    # Add beta context summary
+    left_join(beta_context_summary, by = "region_id")
+
+  write_tsv(master_full, "MASTER_FULL_enriched.tsv")
+  cat("master_full:", nrow(master_full), "regions,", ncol(master_full), "columns\n")
+
+
+
+  # ============================================================
+  # LAYER 3 Filtering combinations WITHOUT HOTSPOTS
+  # ============================================================
+ 
+   # 1. Total (everything, no filters)
+  epi_1_total         <- get_epivariants()
+
+  # 2. Strict R-only (no shared, no MR-only)
+  epi_R_strict        <- get_epivariants(epivariant_class = "R_only", direction_agreement = "SAME direction")
+
+  # 3. Strict MR-only (no shared, no R-only)
+  epi_MR_strict       <- get_epivariants(epivariant_class = "MR_only", direction_agreement = "SAME direction")
+
+  # 4. Shared, same direction (R and MR share region )
+  epi_shared_same     <- get_epivariants(epivariant_class = "Shared_R_and_MR")
+
+  # 5. total 
+  
+
+
+
+
+
+
+# FILTERING BASEDON HOTSPOTS
+epi_1_hotspots <- epi_1_total %>% hybrid_clustering()                  
+epi_R_hotspot <- epi_1_total %>% filter(epivariant_class == "R_only") %>% hybrid_clustering()
+epi_MR_hotspot <- epi_1_total %>% filter(epivariant_class == "MR_only") %>% hybrid_clustering() 
+
+
+epi_1_hotspots <- assign_canonical_cluster_ids(epi_1_hotspots)
+epi_R_hotspot <- assign_canonical_cluster_ids(epi_R_hotspot)
+epi_MR_hotspot <- assign_canonical_cluster_ids(epi_MR_hotspot)
+
+
+epi_1_hotspots_enriched <- enrich_clusters(
+  epi_clustered = epi_1_hotspots,
+  beta_context  = beta_context,
+  sample_info   = sample_info,
+  cluster_col   = "canonical_cluster_id",   # swap to "dbscan_cluster_id" as needed
+  sample_col    = "samples_final"
+)
+
+epi_R_hotspot_enriched <- enrich_clusters(
+  epi_clustered = epi_R_hotspot,
+  beta_context  = beta_context,
+  sample_info   = sample_info,
+  cluster_col   = "canonical_cluster_id",   # swap to "dbscan_cluster_id" as needed
+  sample_col    = "samples_final"
+)
+
+epi_MR_hotspot_enriched <- enrich_clusters(
+  epi_clustered = epi_MR_hotspot,
+  beta_context  = beta_context,
+  sample_info   = sample_info,
+  cluster_col   = "canonical_cluster_id",   # swap to "dbscan_cluster_id" as needed
+  sample_col    = "samples_final"
+)
+
+
+#APPLY filters to the enriched hotspot tables as needed, e.g.:
+
+
