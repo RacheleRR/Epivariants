@@ -1602,3 +1602,92 @@ summary_tbl <- as.data.frame(epi_clustered) %>%
 }
 
 
+
+#table with gene names 
+
+save_epi_tables <- function(epi_df,
+                             label       = "epivariants",
+                             format      = "tsv",     # "tsv" or "csv"
+                             output_dir  = ".") {
+  
+  library(tidyverse)
+  
+  sep <- if (format == "tsv") "\t" else ","
+  ext <- format
+  
+  # Helper
+  write_table <- function(df, name) {
+    path <- file.path(output_dir, paste0(name, ".", ext))
+    write.table(df, path, sep = sep, row.names = FALSE, quote = FALSE)
+    cat("  Saved:", path, "(", nrow(df), "rows )\n")
+  }
+  
+  cat("=== save_epi_tables() —", label, "===\n")
+  
+  # 1. Full epi_df
+  write_table(epi_df, paste0(label, "_full"))
+  
+  # 2. Per-class splits
+  for (cls in unique(epi_df$epivariant_class)) {
+    sub <- epi_df %>% filter(epivariant_class == cls)
+    write_table(sub, paste0(label, "_", cls))
+  }
+  
+  # 3. Unique gene table — per comparison type
+  # Genes are stored as comma-separated in gene_symbol column typically
+  # Each row = one unique gene × comparison_type × epivariant_class
+  
+  if (!"gene_symbol" %in% names(epi_df)) {
+    cat("  No gene_symbol column — skipping gene table\n")
+    return(invisible(NULL))
+  }
+  
+    gene_table <- epi_df %>%
+    filter(!is.na(gene_symbol), gene_symbol != "",
+           gene_symbol != "NA", gene_symbol != ".") %>%
+    dplyr::select(region_id, gene_symbol, epivariant_class,
+                  chromosome, start, end,
+                  # Include key columns if present
+                  any_of(c("tier", "n_methods_total", "n_samples_total",
+                            "annotation_broad", "cpgi_context",
+                            "mean_abs_delta_detail", "in_hotspot",
+                            "consensus_direction",
+                            "samples_R_vs_NR", "samples_MR_vs_NR",
+                            "samples_final"))) %>%
+    # Some regions may have multiple genes — expand
+    mutate(gene_symbol = str_split(gene_symbol, ";|,|\\|")) %>%
+    unnest(gene_symbol) %>%
+    mutate(gene_symbol = trimws(gene_symbol)) %>%
+    filter(gene_symbol != "", gene_symbol != "NA", gene_symbol != ".") %>%
+    # One row per unique gene × class × comparison
+    distinct(gene_symbol, epivariant_class, consensus_direction, .keep_all = TRUE) %>%
+    arrange(epivariant_class, gene_symbol)
+  
+  write_table(gene_table, paste0(label, "_unique_genes"))
+  
+  # 4. Gene table split by comparison type
+  for (cls in unique(gene_table$epivariant_class)) {
+    sub_genes <- gene_table %>% filter(epivariant_class == cls)
+    write_table(sub_genes, paste0(label, "_genes_", cls))
+  }
+  
+  # 5. Summary counts table
+  summary_counts <- tibble(
+    label            = label,
+    total_regions    = nrow(epi_df),
+    n_R_only         = sum(epi_df$epivariant_class == "R_only",         na.rm=TRUE),
+    n_MR_only        = sum(epi_df$epivariant_class == "MR_only",        na.rm=TRUE),
+    n_Shared         = sum(epi_df$epivariant_class == "Shared_R_and_MR",na.rm=TRUE),
+    n_unique_genes   = n_distinct(gene_table$gene_symbol),
+    n_genes_R_only   = n_distinct(filter(gene_table, epivariant_class=="R_only")$gene_symbol),
+    n_genes_MR_only  = n_distinct(filter(gene_table, epivariant_class=="MR_only")$gene_symbol),
+    n_genes_Shared   = n_distinct(filter(gene_table, epivariant_class=="Shared_R_and_MR")$gene_symbol),
+    n_in_hotspot     = if ("in_canonical_cluster" %in% names(epi_df))
+                         sum(epi_df$in_hotspot, na.rm=TRUE) else NA
+  )
+  
+  write_table(summary_counts, paste0(label, "_summary_counts"))
+  
+  cat("=== Done ===\n")
+  invisible(list(full = epi_df, genes = gene_table, summary = summary_counts))
+}
