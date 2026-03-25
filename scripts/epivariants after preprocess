@@ -432,7 +432,6 @@
 
 dbscan_clusters <- dbscan_clustering(master_annotated, eps_kb = 10, min_points = 3)
 
-
 clusters_50pct <- overlap_clustering(master_annotated, min_overlap_pct = 50)
 clusters_10pct <- overlap_clustering(master_annotated, min_overlap_pct = 10)
 
@@ -447,9 +446,9 @@ clusters_500bp <- proximity_clustering(master_annotated, max_distance = 500)
 # Usage:
 epi_clean_clustered <- hybrid_clustering(master_annotated)
 
-# Now filter to truly clustered regions:
-epi_truly_clustered <- epi_clean_clustered %>%
-  filter(is_truly_clustered == TRUE)
+# # Now filter to truly clustered regions:
+# epi_truly_clustered <- epi_clean_clustered %>%
+#   filter(is_truly_clustered == TRUE)
 
 #! 9. BETA LONG etc
 
@@ -575,8 +574,12 @@ epi_truly_clustered <- epi_clean_clustered %>%
   # 4. Shared, same direction (R and MR share region )
   epi_shared_same     <- get_epivariants(epivariant_class = "Shared_R_and_MR")
 
-  # 5. total 
-  
+  # 5. total filtered by annotation (promoter, enhancer etc )
+
+  # 6. total filtered by beta context (e.g. mean_abs_delta_detail > 0.2 or 0.15)
+
+  # 7. total filtered by annotation ( cg island context + cre overlap etc )
+
 
 
 
