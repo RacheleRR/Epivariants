@@ -83,7 +83,8 @@ plot_cluster_landscape <- function(
     window_cpgs   = 200,
     cluster_type  = c("any", "proximity", "overlap", "dbscan"),
     min_epi_pts   = 1,
-    seed          = 42
+    seed          = 42,
+    title = ""
 ) {
   set.seed(seed)
   cluster_type <- match.arg(cluster_type)
@@ -475,7 +476,7 @@ plot_cluster_landscape <- function(
 
   out_files <- map2(plots, seq_along(plots), function(p, i) {
   
-  fname <- paste0("cluster_", cluster_type, "_", i, ".png")
+  fname <- paste0(title, "cluster_", cluster_type, "_", i, ".png")
   
   ggsave(
     filename = fname,
