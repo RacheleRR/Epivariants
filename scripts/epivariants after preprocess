@@ -567,10 +567,10 @@ epi_clean_clustered <- hybrid_clustering(master_annotated)
   epi_1_total         <- get_epivariants()
 
   # 2. Strict R-only (no shared, no MR-only)
-  epi_R_strict        <- get_epivariants(epivariant_class = "R_only", direction_agreement = "SAME direction")
+  epi_R_strict        <- get_epivariants(epivariant_class = "R_only")
 
   # 3. Strict MR-only (no shared, no R-only)
-  epi_MR_strict       <- get_epivariants(epivariant_class = "MR_only", direction_agreement = "SAME direction")
+  epi_MR_strict       <- get_epivariants(epivariant_class = "MR_only")
 
   # 4. Shared, same direction (R and MR share region )
   epi_shared_same     <- get_epivariants(epivariant_class = "Shared_R_and_MR")
@@ -583,23 +583,22 @@ epi_clean_clustered <- hybrid_clustering(master_annotated)
 
 
   # 6. total filtered by beta context (e.g. mean_abs_delta_detail > 0.2 or 0.15)
-epi_beta_filtered_1 <- get_epivariants( beta_context_filter = list(mean_abs_delta_detail = 0.15) ) #
-epi_beta_filtered_2 <- get_epivariants( beta_context_filter = list(pct_cpgs_02_detail ≥ 50% ) ) #
-epi_beta_filtered_3 <- get_epivariants( beta_context_filter = list(median_nSD_detail ≥ 3) ) #
-epi_beta_filtered_strict <- get_epivariants( beta_context_filter = list(mean_abs_delta_detail = 0.15,pct_cpgs_02_detail ≥ 50%)  ) #
+epi_beta_filtered_1 <- get_epivariants( beta_context_filter = list(mean_abs_delta = 0.15, use_detail= TRUE) ) #
+epi_beta_filtered_2 <- get_epivariants( beta_context_filter = list(pct_cpgs_02 >= 50 , use_detail= TRUE ) ) #
+epi_beta_filtered_3 <- get_epivariants( beta_context_filter = list(median_nSD >= 3, use_detail= TRUE) ) #
+epi_beta_filtered_strict <- get_epivariants( beta_context_filter = list(mean_abs_delta = 0.15,pct_cpgs_02 >= 50, use_detail= TRUE) ) #
 
-beta_bg_sd_detail
+
 
 
   # 7. total filtered by annotation ( cg island context + cre overlap etc )
 
+epi_shores_shelves_islands <- get_epivariants( annotation_filter = list(cpgi = c("shores", "shelves", "islands")))
+epi_no_inter <- get_epivariants(annotation_filter = list(cpgi = c("shores|shelves"))) %>%filter(!grepl("inter", cpgi_context))
+epi_no_inter_islands <- get_epivariants(annotation_filter = list(cpgi = c("shores|islands"))) %>%filter(!grepl("inter", cpgi_context))
+epi_cCRE <- get_epivariants( annotation_filter = list(require_cre = TRUE))
 
-  epi_shores <- get_epivariants( !annotation_filter =list(cpgi_context = c("shores", "shelves", "islands")) ) # 
-  epi_cCRE <- get_epivariants( annotation_filter = list(in_cre = "Yes") )
 
- [1] "shores"                       "shelves,shores"               "islands"                      "islands,shores"              
- [5] "shelves"                      "inter"                        "islands,shelves,shores"       "inter,shelves"               
- [9] "inter,shelves,shores"         "inter,islands,shelves,shores"
 
 
 # FILTERING BASEDON HOTSPOTS
@@ -670,3 +669,80 @@ write_tsv(strong_hotspots, "STRONG_HOTSPOTS.tsv")
 #APPLY filters to the enriched hotspot tables as needed, e.g.:
 
 
+
+# PLOTS
+
+beta_long_clean    <- get_beta_long(epi_1_total, beta_long_base, lookup_mega)
+beta_context_clean <- get_beta_context(epi_1_total, beta_context)
+
+desc_1_clean <- plot_package_descriptive(
+  epi_df             = epi_1_total,
+  unified_summary    = unified_summary,
+  clean_R            = clean_R,
+  clean_MR           = clean_MR,
+  shared_epivariants = shared_epivariants,
+  beta_long          = beta_long_clean,
+  beta_context       = beta_context_clean,
+  all_epi_data       = all_epi_data,
+  label              = "1_clean_all"
+)
+
+
+
+
+
+
+# burden etc
+
+
+#!14.caluclate burden 
+burden <- compute_burden(master_annotated)
+write_tsv(burden, "epivariant_burden_per_sample.tsv")
+
+cat("\n=== BURDEN SUMMARY ===\n")
+burden %>%
+  group_by(epivariant_group, has_epivariant) %>%
+  summarise(
+    n_patients      = n(),
+    mean_epivariants = round(mean(n_epivariants), 1),
+    max_epivariants  = max(n_epivariants),
+    .groups = "drop"
+  ) %>%
+  print()
+
+
+
+
+# Add per-sample epivariant burden analysis
+sample_burden <- beta_context_per_sample %>%
+  group_by(sample_id, response, epivariant_class) %>%
+  summarise(
+    n_epivariants = n_distinct(region_id),
+    mean_effect_size = mean(mean_abs_delta_detail, na.rm=TRUE),
+    n_promoter_epivars = sum(annotation_broad == "Promoter", na.rm=TRUE),
+    .groups = "drop"
+  )
+
+# Test if epivariant burden correlates with response
+burden_test <- sample_burden %>%
+  group_by(response, epivariant_class) %>%
+  summarise(mean_burden = mean(n_epivariants), .groups = "drop")
+
+#!15. compare R vs MR 
+
+# Add statistical comparison of characteristics
+compare_R_vs_MR <- function(master_full) {
+  master_full %>%
+    filter(epivariant_class %in% c("R_only", "MR_only")) %>%
+    group_by(epivariant_class) %>%
+    summarise(
+      n_regions = n(),
+      median_delta_beta = median(mean_abs_delta_detail, na.rm=TRUE),
+      median_n_cpgs = median(n_cpgs),
+      pct_promoter = mean(annotation_broad == "Promoter", na.rm=TRUE) * 100,
+      pct_in_cre = mean(in_cre == "Yes", na.rm=TRUE) * 100,
+      pct_hyper = mean(grepl("hyper", consensus_direction), na.rm=TRUE) * 100
+    )
+}
+
+comparison_summary <- compare_R_vs_MR(master_full)
