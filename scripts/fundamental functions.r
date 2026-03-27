@@ -1057,20 +1057,32 @@ hybrid_clustering <- function(epi_df) {
     # --- Annotation filter ---
     filter_by_annotation <- function(df,
                                     features    = NULL,   # e.g. c("Promoter","5'UTR")
-                                    cpgi        = NULL,   # e.g. c("island","shore")
+                                    cpgi        = NULL,   # e.g. c("island","shore") - will match if present anywhere
                                     require_cre = FALSE) {
-    out <- df
-    if (!is.null(features))  out <- filter(out, annotation_broad %in% features)
-    if (!is.null(cpgi))      out <- filter(out, cpgi_context     %in% cpgi)
-    if (require_cre)         out <- filter(out, in_cre == TRUE)
-    cat("After annotation filter:", nrow(out), "of", nrow(df), "regions kept\n")
-    return(out)
+        out <- df
+        
+        if (!is.null(features)) {
+            out <- filter(out, annotation_broad %in% features)
+        }
+        
+        if (!is.null(cpgi)) {
+            # Create a pattern that matches if ANY of the cpgi terms appear in the string
+            cpgi_pattern <- paste(cpgi, collapse = "|")
+            out <- out %>%
+                filter(grepl(cpgi_pattern, cpgi_context))
+        }
+        
+        if (require_cre) {
+            out <- filter(out, in_cre == TRUE)
+        }
+        
+        cat("After annotation filter:", nrow(out), "of", nrow(df), "regions kept\n")
+        return(out)
     }
-
     # --- Beta context filter ---
     filter_by_beta_context <- function(df,
-                                        min_abs_delta  = 0.2,   # effect size threshold
-                                        min_pct_cpgs   = 50,    # % of CpGs above threshold
+                                        min_abs_delta  = NULL,   # effect size threshold
+                                        min_pct_cpgs   = NULL,    # % of CpGs above threshold
                                         min_median_nSD = NULL,  # optional SD cutoff
                                         use_detail     = TRUE) {
     
@@ -1690,4 +1702,115 @@ save_epi_tables <- function(epi_df,
   
   cat("=== Done ===\n")
   invisible(list(full = epi_df, genes = gene_table, summary = summary_counts))
+}
+
+
+
+# ============================================================
+# 10. EPIVARIANT BURDEN PER SAMPLE
+# ============================================================
+# Within R patients: which individuals carry epivariants, how many?
+# Within MR patients: same question.
+# NR is NOT included — they cannot have epivariants by design.
+# The meaningful question is heterogeneity WITHIN responder groups:
+# do some R patients carry many epivariants and others none?
+
+compute_burden <- function(master_annotated) {
+
+  burden_rows <- map_dfr(seq_len(nrow(master_annotated)), function(i) {
+
+    row <- master_annotated[i, ]
+
+    if (row$epivariant_class == "R_only") {
+      samps <- trimws(str_split(row$samples_final, ",")[[1]])
+      grp   <- "R"
+    } else if (row$epivariant_class == "MR_only") {
+      samps <- trimws(str_split(row$samples_final, ",")[[1]])
+      grp   <- "MR"
+    } else {
+      samps_R  <- str_extract(row$samples_final, "(?<=R\\[)[^\\]]+") %>%
+                  str_split(",") %>% `[[`(1) %>% trimws()
+      samps_MR <- str_extract(row$samples_final, "(?<=MR\\[)[^\\]]+") %>%
+                  str_split(",") %>% `[[`(1) %>% trimws()
+      # For shared: keep R and MR entries separate so we can distinguish
+      return(bind_rows(
+        tibble(sample_id = samps_R,  epivariant_group = "R",  region_id = row$region_id,
+               epivariant_class = row$epivariant_class, tier = row$tier,
+               consensus_direction = row$consensus_direction,
+               annotation_broad = row$annotation_broad, gene_symbol = row$gene_symbol),
+        tibble(sample_id = samps_MR, epivariant_group = "MR", region_id = row$region_id,
+               epivariant_class = row$epivariant_class, tier = row$tier,
+               consensus_direction = row$consensus_direction,
+               annotation_broad = row$annotation_broad, gene_symbol = row$gene_symbol)
+      ))
+    }
+
+    tibble(
+      sample_id           = samps,
+      epivariant_group    = grp,
+      region_id           = row$region_id,
+      epivariant_class    = row$epivariant_class,
+      tier                = row$tier,
+      consensus_direction = row$consensus_direction,
+      annotation_broad    = row$annotation_broad,
+      gene_symbol         = row$gene_symbol
+    )
+  })
+
+  # Aggregate per sample
+  burden_summary <- burden_rows %>%
+    group_by(sample_id, epivariant_group) %>%
+    summarise(
+      n_epivariants    = n_distinct(region_id),
+      n_tier1          = sum(tier == "TIER 1: All 5 Methods"),
+      n_tier2          = sum(tier == "TIER 2: 4 Methods"),
+      n_tier3          = sum(tier == "TIER 3: 3 Methods"),
+      n_hyper          = sum(consensus_direction == "hypermethylation"),
+      n_hypo           = sum(consensus_direction == "hypomethylation"),
+      n_promoter       = sum(annotation_broad == "Promoter"),
+      genes_affected   = paste(sort(unique(na.omit(gene_symbol))), collapse = ","),
+      .groups          = "drop"
+    ) %>%
+    left_join(sample_info, by = "sample_id")
+
+  # Add zero-burden samples:
+  # R patients that carry no R epivariants,
+  # MR patients that carry no MR epivariants
+  r_with_burden  <- filter(burden_summary, epivariant_group == "R")$sample_id
+  mr_with_burden <- filter(burden_summary, epivariant_group == "MR")$sample_id
+
+  zero_r  <- tibble(
+    sample_id = setdiff(r_samples,  r_with_burden),
+    epivariant_group = "R", response = "R"
+  )
+  zero_mr <- tibble(
+    sample_id = setdiff(mr_samples, mr_with_burden),
+    epivariant_group = "MR", response = "MR"
+  )
+
+  bind_rows(burden_summary, zero_r, zero_mr) %>%
+    mutate(
+      across(c(n_epivariants, n_tier1, n_tier2, n_tier3,
+               n_hyper, n_hypo, n_promoter), ~ replace_na(., 0)),
+      genes_affected = replace_na(genes_affected, ""),
+      has_epivariant = n_epivariants > 0
+    ) %>%
+    arrange(epivariant_group, desc(n_epivariants))
+}
+
+#compare R vs MR 
+
+# Add statistical comparison of characteristics
+compare_R_vs_MR <- function(master_full) {
+  master_full %>%
+    filter(epivariant_class %in% c("R_only", "MR_only")) %>%
+    group_by(epivariant_class) %>%
+    summarise(
+      n_regions = n(),
+      median_delta_beta = median(mean_abs_delta_detail, na.rm=TRUE),
+      median_n_cpgs = median(n_cpgs),
+      pct_promoter = mean(annotation_broad == "Promoter", na.rm=TRUE) * 100,
+      pct_in_cre = mean(in_cre == "Yes", na.rm=TRUE) * 100,
+      pct_hyper = mean(grepl("hyper", consensus_direction), na.rm=TRUE) * 100
+    )
 }

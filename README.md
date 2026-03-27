@@ -1,1 +1,5 @@
 # Epivariants
+
+pripoirtze epivariants 
+
+# 

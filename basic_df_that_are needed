@@ -1,0 +1,90 @@
+# 
+need to save them all in a new folder 
+
+
+unified_summary
+grset
+bl_base
+lookup_mega
+beta_context
+master_annotated
+master_clean
+shared_epivariants
+clean_MR
+clean_R
+sample_info
+master_full
+all_epi_data
+# Create a new folder
+save_folder <- "epivariant_analysis_results"
+if (!dir.exists(save_folder)) {
+  dir.create(save_folder)
+}
+
+# Function to save objects appropriately based on their class
+save_epi_object <- function(obj, name, folder) {
+  file_path <- file.path(folder, name)
+  
+  # Check if it's a list containing data frames (like bl_base)
+  if (is.list(obj) && !is.data.frame(obj) && !is(obj, "tbl_df")) {
+    # For bl_base which is a list with multiple components
+    if (length(obj) > 1 && all(sapply(obj, function(x) is.data.frame(x) || is(x, "tbl_df")))) {
+      # Save each component separately
+      for (comp_name in names(obj)) {
+        comp_file <- file.path(folder, paste0(name, "_", comp_name, ".rds"))
+        saveRDS(obj[[comp_name]], comp_file)
+        cat("Saved:", comp_file, "\n")
+      }
+      # Also save the whole list as RDS
+      saveRDS(obj, paste0(file_path, "_list.rds"))
+      cat("Saved:", paste0(file_path, "_list.rds"), "\n")
+    } else {
+      # Save as RDS
+      saveRDS(obj, paste0(file_path, ".rds"))
+      cat("Saved:", paste0(file_path, ".rds"), "\n")
+    }
+  } 
+  # For data frames and tibbles
+  else if (is.data.frame(obj) || is(obj, "tbl_df")) {
+    # For very large data frames, use RDS (compressed)
+    if (nrow(obj) > 1000000) {
+      saveRDS(obj, paste0(file_path, ".rds"))
+      cat("Saved (RDS):", paste0(file_path, ".rds"), "\n")
+    } else {
+      # For smaller data frames, also save as CSV for easy viewing
+      write.csv(obj, paste0(file_path, ".csv"), row.names = FALSE)
+      saveRDS(obj, paste0(file_path, ".rds"))
+      cat("Saved (CSV + RDS):", file_path, "\n")
+    }
+  }
+  # For other objects (like GRanges)
+  else {
+    saveRDS(obj, paste0(file_path, ".rds"))
+    cat("Saved (RDS):", paste0(file_path, ".rds"), "\n")
+  }
+}
+
+# List of objects to save
+objects_to_save <- list(
+  unified_summary = unified_summary,
+  grset = grset,
+  bl_base = bl_base,
+  lookup_mega = lookup_mega,
+  beta_context = beta_context,
+  master_annotated = master_annotated,
+  master_clean = master_clean,
+  shared_epivariants = shared_epivariants,
+  clean_MR = clean_MR,
+  clean_R = clean_R,
+  sample_info = sample_info,
+  master_full = master_full,
+  all_epi_data = all_epi_data
+)
+
+# Save all objects
+for (obj_name in names(objects_to_save)) {
+  cat("\nSaving", obj_name, "...\n")
+  save_epi_object(objects_to_save[[obj_name]], obj_name, save_folder)
+}
+
+cat("\nAll objects saved to folder:", save_folder)

@@ -30,10 +30,11 @@ We will use genes asscoiated to neurodrugs in general or psychodrugs  in general
 # Search: "antipsychotics" "Psychoanaleptics" "antidepressants" "Psycholeptics"
 
 
-We will use genes asscoiated to functional impact oflithium or disorder 
+We will use genes asscoiated to functional impact of lithium or disorder 
 # we will use genes asscoiated to neurotransmitters
 # we will use genes associated to neuroprotection and plasticity
 # Or maybe we wil use genes asscoiated to neuro and synpases in general 
+
 
 
 # we will use genes associated to circadian rhythm because lithium is known to affect circadian rhythm and this is thought to be one of the mechanisms of action of lithium
@@ -62,7 +63,7 @@ This reduces false positives exponentially!
 ---
 
 ## **📋 PROBLEM 2: Prioritizing 50,000 Epivariants**
-
+#! ADD DISTANCE TO TSS 
 ### **The Framework: 7 Lines of Evidence**
 
 **Core Principle:**
@@ -72,7 +73,7 @@ This reduces false positives exponentially!
 
 **1. Technical Robustness** [0-30 points]
 - Detected by **4-5 methods** (not 3)
-- Effect size **Δβ ≥ 0.2** (functional threshold)
+- Effect size **Δβ ≥ 0.15** (functional threshold)
 - **Consistent direction** (all hyper OR all hypo)
 - Why: 5 methods agreeing = NOT an artifact
 
@@ -81,13 +82,14 @@ This reduces false positives exponentially!
 - **Enhancer/cCRE** (15 pts) - distal regulation
 - **CpG island shores** (10 pts) - dynamic regions
 - Gene body (3 pts) - unclear mechanism
+- near to TSS 
 - Why: Promoter methylation has PROVEN mechanism
 
-**3. Response Specificity** [0-15 points]
-- **R-only** (15 pts) - resistance mechanism (BEST!)
-- **Shared R+MR** (10 pts) - common pathway
-- MR-only (5 pts) - unclear relevance
-- Why: R-specific = drug response marker, not disease marker
+# **3. Response Specificity** [0-15 points]
+# - **R-only** (15 pts) - resistance mechanism (BEST!)
+# - **Shared R+MR** (10 pts) - common pathway
+# - MR-only (5 pts) - unclear relevance
+# - Why: R-specific = drug response marker, not disease marker
 
 **4. Sample Penetrance** [0-10 points]
 - **Recurrent** (≥5 samples, 10 pts) - subgroup marker
