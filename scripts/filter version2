@@ -1,0 +1,58 @@
+
+
+epi_beta_filtered_1 <- epi_1_total %>% filter(mean_abs_delta_detail >= 0.15)%>% filter(pct_cpgs_02_detail >=50 ) %>% filter(abs(median_nSD_detail) >= 10) 
+epi_beta_filtered_2 <- epi_1_total %>% filter(mean_abs_delta_detail >= 0.15)%>% filter(pct_cpgs_02_detail >=50 ) %>% filter(abs(median_nSD_detail) >= 5) 
+epi_beta_filtered_3 <- epi_1_total %>% filter(mean_abs_delta_detail >= 0.15)%>% filter(pct_cpgs_02_detail >=50 )
+epi_beta_filtered_4_bg <- epi_1_total %>% % filter(abs(median_nSD_detail) >= 5) 
+
+either option 1-2 or 4  
+
+so we will either use the 
+
+filter option 1 
+easy 1 -> filter use only filter(abs(median_nSD_detail) >= 5)  or 10. 
+easy 2 -> filter by mean_nSD_detail_bg 
+
+
+option 1 -> unfiltered + cluster 
+option 2 -> unfiltered + cluster + filtering of cluster  
+option 3 -> filter using only filter(abs(median_nSD_detail) >= 5)  or 10. + cluster
+option 4 -> filter using only filter(abs(median_nSD_detail) >= 5)  or 10. + cluster +filtering 
+option 5 -> filter by mean_nSD_detail_bg (0.03) below + cluster
+option 6 -> filter by mean_nSD_detail_bg (0.03) +cluster +filtering 
+option 7 -> filter by mean_nSD_detail_bg (0.15) above + cluster
+option 8 -> filter by mean_nSD_detail_bg (0.15) +cluster +filtering 
+
+maybe we should as well calculate  the when we create beta context the NR beta mean and sd and then filter for that one ?
+
+
+
+# 1. Total (everything, no filters)
+  epi_1_total         <- get_epivariants()
+
+# 2. total filtered by beta context (e.g. mean_abs_delta_detail > 0.2 or 0.15)
+epi_beta_filtered_1 <- get_epivariants( beta_filter = list(min_abs_delta = 0.15, use_detail= TRUE) ) #
+epi_beta_filtered_2 <- get_epivariants( beta_filter = list(min_pct_cpgs = 50 , use_detail= TRUE ) ) #
+epi_beta_filtered_strict <- get_epivariants( beta_filter = list(min_abs_delta = 0.15,min_pct_cpgs = 50, use_detail= TRUE) ) #
+
+cat("\n SD distribution across regions:\n")
+print(quantile(abs(beta_context_summary$median_nSD_detail),
+               probs = c(0, 0.05, 0.10, 0.25, 0.5, 0.75, 0.90, 0.95, 1),
+               na.rm = TRUE))
+
+sd_high_thresh <- quantile(abs(beta_context_summary$median_nSD_detail), 0.90, na.rm = TRUE)
+cat("\nUsing SD 90th percentile as high-variability threshold:", 
+    round(sd_high_thresh, 4), "\n")
+
+epi_beta_filtered_3 <- epi_1_total %>% filter(abs(median_nSD_detail) >= sd_high_thresh ) #
+epi_beta_filtered_4 <- epi_1_total %>% filter(abs(median_nSD_detail) >= sd_high_thresh ) %>% filter(mean_abs_delta_detail  > 0.15  ) #
+
+
+
+save_epi_tables(epi_1_total, label = "epi_total_unfiltered")
+save_epi_tables(epi_beta_filtered_1, label = "epi_beta_filtered_1")
+save_epi_tables(epi_beta_filtered_2, label = "epi_beta_filtered_2")
+save_epi_tables(epi_beta_filtered_3, label = "epi_beta_filtered_3")
+save_epi_tables(epi_beta_filtered_4, label = "epi_beta_filtered_4")
+
+save_epi_tables(epi_2, label = "epi_ filtered for having more the 2 samples ")

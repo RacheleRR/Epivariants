@@ -1,0 +1,67 @@
+
+   # 1. Total (everything, no filters)
+  epi_1_total         <- get_epivariants()
+
+  # 2. Strict R-only (no shared, no MR-only)
+  epi_R_strict        <- get_epivariants(classes = "R_only")
+
+  # 3. Strict MR-only (no shared, no R-only)
+  epi_MR_strict       <- get_epivariants(classes = "MR_only")
+
+  # 4. Shared, same direction (R and MR share region )
+  epi_shared_same     <- get_epivariants(classes = "Shared_R_and_MR")
+
+
+epi_shores_shelves_islands <- get_epivariants( annotation_filter = list(cpgi = c("shores", "shelves", "islands")))
+epi_no_inter <- get_epivariants(annotation_filter = list(cpgi = c("shores|shelves|islands"))) %>%filter(!grepl("inter", cpgi_context))
+epi_no_inter_islands <- get_epivariants(annotation_filter = list(cpgi = c("shores|islands"))) %>%filter(!grepl("inter", cpgi_context))
+epi_cCRE <- get_epivariants( annotation_filter = list(require_cre = TRUE))
+epi_promoter <-  get_epivariants( annotation_filter = list(features = "Promoter"))
+
+
+#HOTSPOTS 
+epi_1_hotspots <- epi_1_total %>% hybrid_clustering()                  
+epi_R_hotspot <- epi_1_total %>% filter(epivariant_class == "R_only") %>% hybrid_clustering()
+epi_MR_hotspot <- epi_1_total %>% filter(epivariant_class == "MR_only") %>% hybrid_clustering() 
+
+
+epi_1_hotspots <- assign_canonical_cluster_ids(epi_1_hotspots)%>%    filter(in_canonical_cluster == TRUE)
+epi_R_hotspot <- assign_canonical_cluster_ids(epi_R_hotspot)%>%    filter(in_canonical_cluster == TRUE)
+epi_MR_hotspot <- assign_canonical_cluster_ids(epi_MR_hotspot)%>%    filter(in_canonical_cluster == TRUE)
+
+
+epi_1_hotspots_enriched <- enrich_clusters(
+  epi_clustered = epi_1_hotspots,
+  beta_context  = beta_context,
+  sample_info   = sample_info,
+  cluster_col   = "canonical_cluster_id",   # swap to "dbscan_cluster_id" as needed
+  sample_col    = "samples_final"
+)
+
+epi_R_hotspot_enriched <- enrich_clusters(
+  epi_clustered = epi_R_hotspot,
+  beta_context  = beta_context,
+  sample_info   = sample_info,
+  cluster_col   = "canonical_cluster_id",   # swap to "dbscan_cluster_id" as needed
+  sample_col    = "samples_final"
+)
+
+epi_MR_hotspot_enriched <- enrich_clusters(
+  epi_clustered = epi_MR_hotspot,
+  beta_context  = beta_context,
+  sample_info   = sample_info,
+  cluster_col   = "canonical_cluster_id",   # swap to "dbscan_cluster_id" as needed
+  sample_col    = "samples_final"
+)
+
+save_epi_tables(epi_1_hotspots, label = "epi_hotspots")
+save_epi_tables(epi_R_hotspot, label = "epi_R_hotspots")
+save_epi_tables(epi_MR_hotspot, label = "epi_MR_hotspots")
+save_epi_tables(epi_1_total, label = "epi_total_unfiltered")
+save_epi_tables(epi_shores_shelves_islands, label = "shores_shevles_islands")
+save_epi_tables(epi_no_inter, label = "nointer")
+save_epi_tables(epi_no_inter_islands, label = "island_nointer")
+save_epi_tables(epi_cCRE, label = "cCRE")
+save_epi_tables(epi_promoter, label = "promotor")
+
+
