@@ -1095,7 +1095,7 @@ hybrid_clustering <- function(epi_df) {
     out <- df
     if (!is.null(min_abs_delta))  out <- filter(out, .data[[delta_col]] >= min_abs_delta)
     if (!is.null(min_pct_cpgs))   out <- filter(out, .data[[pct_col]]   >= min_pct_cpgs)
-    if (!is.null(min_median_nSD)) out <- filter(out, .data[[nsd_col]]   >= min_median_nSD)
+    if (!is.null(min_median_nSD)) out <- filter(out, .data[[abs(nsd_col)]]   >= min_median_nSD)
     
     cat("After beta context filter:", nrow(out), "of", nrow(df), "regions kept\n")
     return(out)
