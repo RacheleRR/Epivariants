@@ -15,6 +15,10 @@ clean_R
 sample_info
 master_full
 all_epi_data
+
+
+
+
 # Create a new folder
 save_folder <- "epivariant_analysis_results"
 if (!dir.exists(save_folder)) {
@@ -67,7 +71,6 @@ save_epi_object <- function(obj, name, folder) {
 # List of objects to save
 objects_to_save <- list(
   unified_summary = unified_summary,
-  grset = grset,
   bl_base = bl_base,
   lookup_mega = lookup_mega,
   beta_context = beta_context,
@@ -88,3 +91,26 @@ for (obj_name in names(objects_to_save)) {
 }
 
 cat("\nAll objects saved to folder:", save_folder)
+
+
+# Set folder path
+save_folder <- "epivariant_analysis_results"
+
+# Load all objects one by one
+unified_summary <- readRDS(file.path(save_folder, "unified_summary.rds"))
+grset <- readRDS(file.path(save_folder, "grset.rds"))
+bl_base <- readRDS(file.path(save_folder, "bl_base.rds"))
+lookup_mega <- readRDS(file.path(save_folder, "lookup_mega.rds"))
+beta_context <- readRDS(file.path(save_folder, "beta_context.rds"))
+master_annotated <- readRDS(file.path(save_folder, "master_annotated.rds"))
+master_clean <- readRDS(file.path(save_folder, "master_clean.rds"))
+shared_epivariants <- readRDS(file.path(save_folder, "shared_epivariants.rds"))
+clean_MR <- readRDS(file.path(save_folder, "clean_MR.rds"))
+clean_R <- readRDS(file.path(save_folder, "clean_R.rds"))
+sample_info <- readRDS(file.path(save_folder, "sample_info.rds"))
+master_full <- readRDS(file.path(save_folder, "master_full.rds"))
+all_epi_data <- readRDS(file.path(save_folder, "all_epi_data.rds"))
+
+# Verify they loaded correctly
+cat("All objects loaded successfully!\n")
+cat("Objects in environment:", ls(pattern = "unified_summary|grset|bl_base|lookup_mega|beta_context|master_annotated|master_clean|shared_epivariants|clean_MR|clean_R|sample_info|master_full|all_epi_data"), "\n")
